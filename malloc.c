@@ -5,6 +5,7 @@
 
 #include "memlib.h"
 #include "malloc.h"
+#include "mm_thread.h"
 
 
 name_t myname = {
@@ -47,7 +48,7 @@ name_t myname = {
 pthread_mutex_t mem_sbrk_lock = PTHREAD_MUTEX_INITIALIZER;
 
 #define CACHELINE_SIZE 64
-#define SUPERBLOCK_SIZE 8192
+#define SUPERBLOCK_SIZE 1024
 
 // our size classes will be powers of this
 // we may try values of 1.2 and 1.5 as well
@@ -74,6 +75,16 @@ size_t SB_AVAILABLE = 0;
 
 // the denominator for fullness buckets e.g. 1/8 full, 2/8 full, etc...
 #define FULLNESS_DENOM 8
+
+// size of heap metadata structure padded to cache line
+size_t HEAP_SIZE = 0;
+
+// array of heap arrays
+struct heap_t;
+typedef struct heap_t heap;
+heap **HEAPS = NULL;
+
+int NUM_PROCESSORS = 0;
 
 // ---------------------------------------------------------------------
 // Helper functions for various memory alignments
@@ -138,8 +149,6 @@ typedef struct superblock_t superblock;
 // size of the superblock header
 #define SUPERBLOCK_HSIZE (sizeof(superblock))
 
-
-
 // if a superblock has less than threshold allocated, we move it to global heap
 #define ALLOC_THRESHOLD (SUPERBLOCK_SIZE/FULLNESS_DENOM)
 
@@ -178,6 +187,7 @@ int init_superblock(long owner, long size_class, long n, char *sb) {
 }
 
 void debug_superblock(char *ptr) {
+	printf("-------------------------------------------------------\n");
 	printf("header size: %u\n", SUPERBLOCK_HSIZE);
 	size_t freestart = round_to(SUPERBLOCK_HSIZE, 8);
 	printf("freestart: %u\n", freestart);
@@ -208,11 +218,49 @@ struct heap_t {
 	// ordered from most full to least full
 	// the extra bucket is for completely empty superblocks
 	superblock **buckets[1 + FULLNESS_DENOM];
+	
+	// stats
+	int num_superblocks;
 };
 typedef struct heap_t heap;
 
-int init_heap(char *h) {
-	return 0;
+heap *new_heap() {
+	// allocate it from the OS
+	heap *h = (heap*)mem_sbrk(HEAP_SIZE);
+	assert(h != NULL);
+	
+	pthread_mutex_init(&h->lock, NULL);
+	h->num_superblocks = 0;
+	
+	// initialize fullness buckets
+	size_t free_bucket_size = NUM_SIZE_CLASSES*sizeof(superblock*);
+	int i;
+	for (i = 0; i < (1 + FULLNESS_DENOM); ++i) {
+		h->buckets[i] = (superblock**)((char*)h + sizeof(heap) + i*free_bucket_size);
+		int j;
+		for (j = 0; j < NUM_SIZE_CLASSES; ++j) {
+			h->buckets[i][j] = NULL;
+		}
+	}
+	
+	return h;
+}
+
+void debug_heap(char *ptr) {
+	printf("-------------------------------------------------------\n");
+	printf("Heap info:\n");
+	printf("Heap size: %u\n", HEAP_SIZE);
+	printf("Bucket start: %u\n", sizeof(heap));
+	heap *h = (heap*)ptr;
+	int i;
+	//int j;
+	for (i = 0; i < (1+FULLNESS_DENOM); ++i) {
+		//printf("bucket number: %d, pointer address: %p\n", i, h->buckets[i]);
+		printf("fb:%d: %u\n", i, (size_t)((char*)h->buckets[i]-(char*)h));
+		//for (j = 0; j < NUM_SIZE_CLASSES; ++j) {
+		//	printf("fb:%d,fb:%d: %u\n", i, j, (size_t)h->buckets[i][j]);
+		//}
+	}
 }
 
 // ---------------------------------------------------------------------
@@ -287,8 +335,35 @@ int mm_init (void) {
 	// make sure to pad the header if necessary to be 8 byte aligned
 	SB_AVAILABLE = SUPERBLOCK_SIZE - round_to(SUPERBLOCK_HSIZE, 8);
 	
-	void test_superblock();
-	test_superblock();
+	// calculate how big the the fullness buckets need to be;
+	size_t num_free_buckets = (1 + FULLNESS_DENOM) * NUM_SIZE_CLASSES;
+	HEAP_SIZE = round_to_cache(sizeof(heap) + num_free_buckets * sizeof(superblock*));
+	
+	// calculate number of processors
+	NUM_PROCESSORS = getNumProcessors();
+	
+	// make the shared array of heaps
+	// heap 0 is the global heap
+	size_t num_heaps = NUM_PROCESSORS+1;
+	size_t heaps_array_size = round_to_cache(num_heaps*sizeof(heap*));
+	HEAPS = mem_sbrk(heaps_array_size);
+	assert(HEAPS != NULL);
+	
+	// initialize all heaps
+	int i;
+	for (i = 0; i < num_heaps; ++i) {
+		HEAPS[i] = new_heap();
+		assert(HEAPS[i] != 0);
+	}
+	
+	void test_heap();
+	test_heap();
+	
+	//void test_superblock();
+	//test_superblock();
+	
+	printf("Page size: %db\n", mem_pagesize());
+	printf("Overhead: %db\n", mem_usage());
 	
 	return 0;
 }
@@ -310,4 +385,12 @@ void test_superblock() {
 	char *sb = mem_sbrk(SUPERBLOCK_SIZE);
 	init_superblock(0, 0, 1, sb);
 	debug_superblock(sb);
+}
+
+void test_heap() {
+	int i;
+	for (i = 0; i < NUM_PROCESSORS+1; ++i) {
+		printf("heap %d:\n", i);
+		debug_heap((char*)HEAPS[i]);
+	}
 }

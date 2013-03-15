@@ -35,6 +35,10 @@ name_t myname = {
  *  will always be superblock size aligned so we can compute
  * the start of the superblock from a user pointer.
  * 
+ * Use SB_RESERVE.
+ * 
+ * How to handle size agnostic completely free superblocks?
+ * 
  * */
 
 // toggling debug print
@@ -72,7 +76,7 @@ pthread_mutex_t mem_sbrk_lock = PTHREAD_MUTEX_INITIALIZER;
 #define MAX_SIZE_CLASS (DSEG_MAX)
 
 // an upper bound on the number of size classes we'll have
-#define MAX_NUM_SIZE_CLASS 256
+#define MAX_NUM_SIZE_CLASS 128
 
 // array of the sizes of the size classes
 size_t *SIZE_CLASSES = NULL;
@@ -83,8 +87,12 @@ int NUM_SIZE_CLASSES = 0;
 // how much space is available in a superblock for allocation
 size_t SB_AVAILABLE = 0;
 
+// if a heap has less or exactly this number of superblocks
+// then it won't give any of them up to the global heap
+#define SB_RESERVE 4
+
 // the denominator for fullness buckets e.g. 1/8 full, 2/8 full, etc...
-#define FULLNESS_DENOM 4
+#define FULLNESS_DENOM 3
 
 // size of heap metadata structure padded to cache line
 size_t HEAP_SIZE = 0;

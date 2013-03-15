@@ -37,6 +37,14 @@ name_t myname = {
  * 
  * */
 
+// toggling debug print
+#if 0
+#define LOG(...) do {fprintf(stderr, __VA_ARGS__);} while(0)
+#else
+#define LOG(...) do {} while(0)
+#endif
+
+
 // ---------------------------------------------------------------------
 // Shared global variables that are set during init
 // ---------------------------------------------------------------------
@@ -446,7 +454,7 @@ void *mm_malloc (size_t size) {
 	}
 	int mycpu = sched_getcpu();
 	assert(mycpu >= 0);
-printf("cpu %d, size %u, size class %d\n", mycpu, size, sizeclass);
+LOG("cpu %d, size %u, size class %d\n", mycpu, size, sizeclass);
 	// check this heap for free block
 	heap *myheap = HEAPS[mycpu +1];
 	int bucketnum;
@@ -476,7 +484,7 @@ printf("cpu %d, size %u, size class %d\n", mycpu, size, sizeclass);
 		pthread_mutex_unlock(&myheap->lock);
 		return ret;
 	}
-printf("Checking global heap\n");
+LOG("Checking global heap\n");
 	// unsuccessful in myheap, so check global heap
 	heap *global = HEAPS[0];
 	pthread_mutex_lock(&global->lock);
@@ -486,7 +494,7 @@ printf("Checking global heap\n");
 		pthread_mutex_unlock(&myheap->lock);
 		return ret;
 	}
-printf("mem_sbrking\n");
+LOG("mem_sbrking\n");
 	// unsucessful in global heap too, so get new superblock
 	int numblks = 1;
 	if (SIZE_CLASSES[sizeclass] > SB_AVAILABLE){

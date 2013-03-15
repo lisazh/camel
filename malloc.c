@@ -62,7 +62,7 @@ name_t myname = {
 pthread_mutex_t mem_sbrk_lock = PTHREAD_MUTEX_INITIALIZER;
 
 #define CACHELINE_SIZE 64
-#define SUPERBLOCK_SIZE 1024
+#define SUPERBLOCK_SIZE 4096
 
 // our size classes will be powers of this
 // we may try values of 1.2 and 1.5 as well
@@ -537,6 +537,7 @@ DEBUG("mm_malloc: mem_sbrking\n");
 		newblk->next = oldhead;
 		myheap->buckets[FULLNESS_DENOM - 1][sizeclass] = newblk;
 		myheap->num_superblocks += 1;
+		update_buckets(myheap, FULLNESS_DENOM - 1, sizeclass);
 	}
 	pthread_mutex_unlock(&myheap->lock);
 	return ret;

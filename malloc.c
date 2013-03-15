@@ -311,7 +311,7 @@ int init_size_classes() {
 		++NUM_SIZE_CLASSES;
 		size *= SIZE_CLASS_BASE;
 	}
-	/*
+	
 	// debugging
 	long n;
 	for (n = 0; n < NUM_SIZE_CLASSES; ++n) {
@@ -359,8 +359,8 @@ int mm_init (void) {
 		assert(HEAPS[i] != 0);
 	}
 	
-	//void test_heap();
-	//test_heap();
+	void test_heap();
+	test_heap();
 	
 	//void test_superblock();
 	//test_superblock();

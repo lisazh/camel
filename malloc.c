@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include <assert.h>
 #include <stdio.h>
 #include <pthread.h>
@@ -75,7 +76,7 @@ int NUM_SIZE_CLASSES = 0;
 size_t SB_AVAILABLE = 0;
 
 // the denominator for fullness buckets e.g. 1/8 full, 2/8 full, etc...
-#define FULLNESS_DENOM 8
+#define FULLNESS_DENOM 4
 
 // size of heap metadata structure padded to cache line
 size_t HEAP_SIZE = 0;
@@ -153,7 +154,7 @@ typedef struct superblock_t superblock;
 #define SUPERBLOCK_HSIZE (sizeof(superblock))
 
 // if a superblock has less than threshold allocated, we move it to global heap
-#define ALLOC_THRESHOLD (SUPERBLOCK_SIZE/FULLNESS_DENOM)
+#define ALLOC_THRESHOLD (SUPERBLOCK_SIZE/8)
 
 // initialize a superblock
 // given the heap that owns this, what size class this is, and how many in the array
@@ -196,10 +197,10 @@ void debug_superblock(char *ptr) {
 	printf("freestart: %u\n", freestart);
 	
 	superblock *sb = (superblock*)ptr;
-	printf("Owner:%ld\n", sb->owner);
-	printf("Size class:%ld, %u\n", sb->size_class, SIZE_CLASSES[sb->size_class]);
-	printf("Array n:%ld\n", sb->n);
-	printf("freelist:%ld\n", (long)((char*)sb->head - ptr));
+	printf("Owner:%d\n", sb->owner);
+	printf("Size class:%d, %u\n", sb->size_class, SIZE_CLASSES[sb->size_class]);
+	printf("Array n:%d\n", sb->n);
+	printf("freelist:%d\n", (int)((char*)sb->head - ptr));
 	printf("allocated:%u\n", sb->allocated);
 	// print the freelist
 	freelist *head = sb->head;
@@ -219,8 +220,7 @@ struct heap_t {
 	
 	// array of fullness buckets
 	// ordered from most full to least full
-	// the extra bucket is for completely empty superblocks
-	superblock **buckets[1 + FULLNESS_DENOM];
+	superblock **buckets[FULLNESS_DENOM];
 	
 	// stats
 	int num_superblocks;
@@ -238,7 +238,7 @@ heap *new_heap() {
 	// initialize fullness buckets
 	size_t free_bucket_size = NUM_SIZE_CLASSES*sizeof(superblock*);
 	int i;
-	for (i = 0; i < (1 + FULLNESS_DENOM); ++i) {
+	for (i = 0; i < (FULLNESS_DENOM); ++i) {
 		h->buckets[i] = (superblock**)((char*)h + sizeof(heap) + i*free_bucket_size);
 		int j;
 		for (j = 0; j < NUM_SIZE_CLASSES; ++j) {
@@ -257,7 +257,7 @@ void debug_heap(char *ptr) {
 	heap *h = (heap*)ptr;
 	int i;
 	//int j;
-	for (i = 0; i < (1+FULLNESS_DENOM); ++i) {
+	for (i = 0; i < (FULLNESS_DENOM); ++i) {
 		//printf("bucket number: %d, pointer address: %p\n", i, h->buckets[i]);
 		printf("fb:%d: %u\n", i, (size_t)((char*)h->buckets[i]-(char*)h));
 		//for (j = 0; j < NUM_SIZE_CLASSES; ++j) {
@@ -273,8 +273,12 @@ void debug_heap(char *ptr) {
 // find which size class s falls into
 // we may have to replace this with binary search if we can't use log
 int find_size_class(size_t s) {
+	if (s <= MIN_SIZE_CLASS) {
+		return 0;
+	}
+	// otherwise bigger than the min size class
 	double log_base = log((double)s / MIN_SIZE_CLASS) / log(SIZE_CLASS_BASE);
-	int candidate = (size_t)ceil(log_base);
+	int candidate = (int)ceil(log_base);
 	
 	if (candidate >= NUM_SIZE_CLASSES) {
 		// too big of a request
@@ -339,7 +343,7 @@ int mm_init (void) {
 	SB_AVAILABLE = SUPERBLOCK_SIZE - round_to(SUPERBLOCK_HSIZE, 8);
 	
 	// calculate how big the the fullness buckets need to be;
-	size_t num_free_buckets = (1 + FULLNESS_DENOM) * NUM_SIZE_CLASSES;
+	size_t num_free_buckets = (FULLNESS_DENOM) * NUM_SIZE_CLASSES;
 	HEAP_SIZE = round_to_cache(sizeof(heap) + num_free_buckets * sizeof(superblock*));
 	
 	// calculate number of processors
@@ -381,40 +385,22 @@ int mm_init (void) {
 	return 0;
 }
 
-/*
- * Helper function for allocating memory.
- * Searches fullness buckets for free block of sizeclass sclass.
- * Returns pointer to freespace. 
- * Assumes lock on heap aheap has been acquired.
- */
-void *search_free(int sclass, heap *aheap){
-	int i;
-	for (i = 0; i<= FULLNESS_DENOM; i++) {
-		superblock *freeblk = aheap->buckets[i][sclass];
-		if (freeblk){
-			pthread_mutex_lock(&freeblk->lock);
-			void *ret = malloc_help(sclass, freeblk);
-			pthread_mutex_unlock(&freeblk->lock);
-			return ret;
-		}
-	}
-	
-	return NULL;
-}
+
 
 
 /*
+ * Helper function for allocating a free block.
  * 
- * 
- * 
+ * Assumes lock on superblock freeblk has been acquired.
  */
 void* malloc_help(int sclass, superblock *freeblk) {
 	
+	void *ret;
 	freelist *freespace = freeblk->head;
 	assert(freespace != NULL);
 	if (freespace->n > 1){
 		--freespace->n;
-		ret = (char *)freespace + (n*SIZE_CLASSES[sclass]);  
+		ret = (char *)freespace + (freespace->n*SIZE_CLASSES[sclass]);  
 	
 	} else { //freespace-> == 1
 		ret = freespace;
@@ -429,30 +415,70 @@ void* malloc_help(int sclass, superblock *freeblk) {
 	
 }
 
+/*
+ * Search function for finding available block.
+ * Searches fullness buckets for free block of sizeclass sclass.
+ * Returns pointer to said free block. 
+ * Assumes lock on heap aheap has been acquired.
+ */
+superblock *search_free(int sclass, heap *aheap, int *bucketnum){
+	int i;
+	for (i = 0; i< FULLNESS_DENOM; i++) {
+		superblock *freeblk = aheap->buckets[i][sclass];
+		if (freeblk != NULL){
+			*bucketnum = i;
+			return freeblk;
+		}
+	}
+	
+	return NULL;
+}
+
 
 void *mm_malloc (size_t size) {
 	if (size == 0)
 		return NULL;
 		
 	int sizeclass = find_size_class(size);
-	if (!sizeclass){
+	if (sizeclass < 0){
 		return NULL;
 	}
 	int mycpu = sched_getcpu();
 	assert(mycpu >= 0);
+printf("cpu %d, size %u, size class %d\n", mycpu, size, sizeclass);
 	// check this heap for free block
 	heap *myheap = HEAPS[mycpu +1];
+	int bucketnum;
 	// lock this heap
 	pthread_mutex_lock(&myheap->lock);
-	void *ret = search_free(sizeclass, myheap);
-	if (ret != NULL) {
+	superblock *freeblk = search_free(sizeclass, myheap, &bucketnum);
+	void *ret;
+	if (freeblk != NULL) {
+		pthread_mutex_lock(&freeblk->lock);
+		ret = malloc_help(sizeclass, freeblk); 
+		//check fullness of this block
+		if (freeblk->head == NULL) {
+			superblock *oldbuckt = myheap->buckets[bucketnum][sizeclass];
+			assert (freeblk == oldbuckt);
+			oldbuckt = oldbuckt->next; //remove this block from bucket
+		} else {
+			double alloc_ratio = (double)freeblk->allocated / (SB_AVAILABLE + (freeblk->n - 1)*SUPERBLOCK_SIZE);
+			if (alloc_ratio > (double)(FULLNESS_DENOM - bucketnum)/FULLNESS_DENOM) {
+				superblock *oldbuckt = myheap->buckets[bucketnum][sizeclass];
+				assert (freeblk == oldbuckt);
+				oldbuckt = oldbuckt->next; //remove this block from bucket
+				freeblk->next = myheap->buckets[bucketnum-1][sizeclass];
+				myheap->buckets[bucketnum - 1][sizeclass] = freeblk;
+			}
+		}
+		pthread_mutex_unlock(&freeblk->lock);
 		pthread_mutex_unlock(&myheap->lock);
 		return ret;
 	}
 	// unsuccessful in myheap, so check global heap
 	heap *global = HEAPS[0];
-	pthread_mutex_lock(global->lock);
-	ret = search_free(sizeclass, global);
+	pthread_mutex_lock(&global->lock);
+	ret = search_free(sizeclass, global, &bucketnum);
 	pthread_mutex_unlock(&global->lock);
 	if (ret != NULL) {
 		pthread_mutex_unlock(&myheap->lock);
@@ -461,19 +487,19 @@ void *mm_malloc (size_t size) {
 	// unsucessful in global heap too, so get new superblock
 	int numblks = 1;
 	if (SIZE_CLASSES[sizeclass] > SB_AVAILABLE){
-		numblks += (SIZE_CLASSES[sizeclass] - SB_AVAILBLE + SUPERBLOCK_SIZE - 1) / SUPERBLOCK_SIZE;
+		numblks += (SIZE_CLASSES[sizeclass] - SB_AVAILABLE + SUPERBLOCK_SIZE - 1) / SUPERBLOCK_SIZE;
 	}
 	pthread_mutex_lock(&mem_sbrk_lock);
 	superblock *newblk = mem_sbrk(SUPERBLOCK_SIZE * numblks);
 	pthread_mutex_unlock(&mem_sbrk_lock);
 	init_superblock(mycpu, sizeclass, numblks, (char *) newblk);
-	superblock *oldhead = myheap->buckets[FULLNESS_DENOM][sizeclass];
+	superblock *oldhead = myheap->buckets[FULLNESS_DENOM - 1][sizeclass];
 	newblk->next = oldhead;
-	myheap->buckets[FULLNESS_DENOM][sizeclass] = newblk;
-	malloc_help(sizeclass, newblk);
-	
-	
-	
+	myheap->buckets[FULLNESS_DENOM - 1][sizeclass] = newblk;
+	myheap->num_superblocks += 1;
+	ret = malloc_help(sizeclass, newblk);
+	pthread_mutex_unlock(&myheap->lock);
+	return ret;
 	
 }
 

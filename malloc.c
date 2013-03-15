@@ -528,7 +528,7 @@ DEBUG("mm_malloc: mem_sbrking\n");
 	pthread_mutex_lock(&mem_sbrk_lock);
 	superblock *newblk = mem_sbrk(SUPERBLOCK_SIZE * numblks);
 	pthread_mutex_unlock(&mem_sbrk_lock);
-	init_superblock(mycpu, sizeclass, numblks, (char *) newblk);
+	init_superblock(mycpu+1, sizeclass, numblks, (char *) newblk);
 	
 	ret = allocate_block(sizeclass, newblk);
 	if (newblk->head != NULL) {

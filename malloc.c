@@ -402,7 +402,8 @@ void* malloc_help(int sclass, superblock *freeblk) {
 		--freespace->n;
 		ret = (char *)freespace + (freespace->n*SIZE_CLASSES[sclass]);  
 	
-	} else { //freespace-> == 1
+	} else { //freespace->n == 1
+		assert(freespace->n == 1);
 		ret = freespace;
 		if (freespace->next != 0) {
 			freeblk->head = (freelist *)((char *)freeblk + freespace->next);
@@ -460,13 +461,13 @@ printf("cpu %d, size %u, size class %d\n", mycpu, size, sizeclass);
 		if (freeblk->head == NULL) {
 			superblock *oldbuckt = myheap->buckets[bucketnum][sizeclass];
 			assert (freeblk == oldbuckt);
-			oldbuckt = oldbuckt->next; //remove this block from bucket
+			myheap->buckets[bucketnum][sizeclass] = oldbuckt->next; //remove this block from bucket
 		} else {
 			double alloc_ratio = (double)freeblk->allocated / (SB_AVAILABLE + (freeblk->n - 1)*SUPERBLOCK_SIZE);
 			if (alloc_ratio > (double)(FULLNESS_DENOM - bucketnum)/FULLNESS_DENOM) {
 				superblock *oldbuckt = myheap->buckets[bucketnum][sizeclass];
 				assert (freeblk == oldbuckt);
-				oldbuckt = oldbuckt->next; //remove this block from bucket
+				myheap->buckets[bucketnum][sizeclass] = oldbuckt->next; //remove this block from bucket
 				freeblk->next = myheap->buckets[bucketnum-1][sizeclass];
 				myheap->buckets[bucketnum - 1][sizeclass] = freeblk;
 			}
@@ -475,6 +476,7 @@ printf("cpu %d, size %u, size class %d\n", mycpu, size, sizeclass);
 		pthread_mutex_unlock(&myheap->lock);
 		return ret;
 	}
+printf("Checking global heap\n");
 	// unsuccessful in myheap, so check global heap
 	heap *global = HEAPS[0];
 	pthread_mutex_lock(&global->lock);
@@ -484,6 +486,7 @@ printf("cpu %d, size %u, size class %d\n", mycpu, size, sizeclass);
 		pthread_mutex_unlock(&myheap->lock);
 		return ret;
 	}
+printf("mem_sbrking\n");
 	// unsucessful in global heap too, so get new superblock
 	int numblks = 1;
 	if (SIZE_CLASSES[sizeclass] > SB_AVAILABLE){
@@ -493,18 +496,22 @@ printf("cpu %d, size %u, size class %d\n", mycpu, size, sizeclass);
 	superblock *newblk = mem_sbrk(SUPERBLOCK_SIZE * numblks);
 	pthread_mutex_unlock(&mem_sbrk_lock);
 	init_superblock(mycpu, sizeclass, numblks, (char *) newblk);
-	superblock *oldhead = myheap->buckets[FULLNESS_DENOM - 1][sizeclass];
-	newblk->next = oldhead;
-	myheap->buckets[FULLNESS_DENOM - 1][sizeclass] = newblk;
-	myheap->num_superblocks += 1;
+	
 	ret = malloc_help(sizeclass, newblk);
+	if (newblk->head != NULL) {
+		// only add to buckets if this isn't full
+		superblock *oldhead = myheap->buckets[FULLNESS_DENOM - 1][sizeclass];
+		newblk->next = oldhead;
+		myheap->buckets[FULLNESS_DENOM - 1][sizeclass] = newblk;
+		myheap->num_superblocks += 1;
+	}
 	pthread_mutex_unlock(&myheap->lock);
 	return ret;
 	
 }
 
 void mm_free (void *ptr) {
-	assert(0);
+	// TODO
 }
 
 // ---------------------------------------------------------------------

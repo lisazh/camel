@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <pthread.h>
 #include <math.h>
+#include <sched.h>
 
 #include "memlib.h"
 #include "malloc.h"
@@ -43,7 +44,7 @@ name_t myname = {
 // size_t is 4 bytes
 // void* is also 4 bytes
 // when checked on redwolf and lab computers
-
+// If assigned 0 below, then is initialized later in mm_init
 // Lock for mem_sbrk
 pthread_mutex_t mem_sbrk_lock = PTHREAD_MUTEX_INITIALIZER;
 
@@ -68,7 +69,7 @@ pthread_mutex_t mem_sbrk_lock = PTHREAD_MUTEX_INITIALIZER;
 size_t *SIZE_CLASSES = NULL;
 
 // number of size classes that we have
-long NUM_SIZE_CLASSES = 0;
+int NUM_SIZE_CLASSES = 0;
 
 // how much space is available in a superblock for allocation
 size_t SB_AVAILABLE = 0;
@@ -96,8 +97,7 @@ char *SUPERBLOCK_START = NULL;
 // round the requested size up to the nearest multiple of the stride
 
 size_t round_to(size_t s, size_t stride) {
-	size_t overflow = s % stride;
-	return overflow ? s + stride - overflow: s;
+	return (s + stride - 1) / stride * stride;
 }
 
 size_t round_to_cache(size_t s) {
@@ -137,14 +137,14 @@ struct superblock_t {
 	size_t allocated;
 	
 	// which heap owns this
-	long owner;
+	int owner;
 	
 	// which size class this is
-	long size_class;
+	int size_class;
 	
 	// how many are in the array, if this is the first of an array
 	// this will be 1 for a regular single superblock
-	long n;
+	int n;
 	
 };
 typedef struct superblock_t superblock;
@@ -158,7 +158,7 @@ typedef struct superblock_t superblock;
 // initialize a superblock
 // given the heap that owns this, what size class this is, and how many in the array
 // given a mem_sbrk region of memory that is assumed to fit
-int init_superblock(long owner, long size_class, long n, char *sb) {
+int init_superblock(int owner, int size_class, int n, char *sb) {
 	assert(owner >= 0);
 	assert(size_class >= 0 && size_class < NUM_SIZE_CLASSES);
 	assert(n > 0);
@@ -272,9 +272,9 @@ void debug_heap(char *ptr) {
 
 // find which size class s falls into
 // we may have to replace this with binary search if we can't use log
-long find_size_class(size_t s) {
+int find_size_class(size_t s) {
 	double log_base = log((double)s / MIN_SIZE_CLASS) / log(SIZE_CLASS_BASE);
-	long candidate = (size_t)ceil(log_base);
+	int candidate = (size_t)ceil(log_base);
 	
 	if (candidate >= NUM_SIZE_CLASSES) {
 		// too big of a request
@@ -324,7 +324,7 @@ int init_size_classes() {
 
 
 // ---------------------------------------------------------------------
-// mm_init, mm_malloc, mm_free
+// mm_init, mm_malloc, mm_freechar
 // ---------------------------------------------------------------------
 
 int mm_init (void) {
@@ -381,8 +381,100 @@ int mm_init (void) {
 	return 0;
 }
 
+/*
+ * Helper function for allocating memory.
+ * Searches fullness buckets for free block of sizeclass sclass.
+ * Returns pointer to freespace. 
+ * Assumes lock on heap aheap has been acquired.
+ */
+void *search_free(int sclass, heap *aheap){
+	int i;
+	for (i = 0; i<= FULLNESS_DENOM; i++) {
+		superblock *freeblk = aheap->buckets[i][sclass];
+		if (freeblk){
+			pthread_mutex_lock(&freeblk->lock);
+			void *ret = malloc_help(sclass, freeblk);
+			pthread_mutex_unlock(&freeblk->lock);
+			return ret;
+		}
+	}
+	
+	return NULL;
+}
+
+
+/*
+ * 
+ * 
+ * 
+ */
+void* malloc_help(int sclass, superblock *freeblk) {
+	
+	freelist *freespace = freeblk->head;
+	assert(freespace != NULL);
+	if (freespace->n > 1){
+		--freespace->n;
+		ret = (char *)freespace + (n*SIZE_CLASSES[sclass]);  
+	
+	} else { //freespace-> == 1
+		ret = freespace;
+		if (freespace->next != 0) {
+			freeblk->head = (freelist *)((char *)freeblk + freespace->next);
+		} else { //freespace->next == 0
+			freeblk->head = NULL;
+		}
+	}
+	freeblk->allocated += SIZE_CLASSES[sclass];
+	return ret;
+	
+}
+
+
 void *mm_malloc (size_t size) {
-	assert(0);
+	if (size == 0)
+		return NULL;
+		
+	int sizeclass = find_size_class(size);
+	if (!sizeclass){
+		return NULL;
+	}
+	int mycpu = sched_getcpu();
+	assert(mycpu >= 0);
+	// check this heap for free block
+	heap *myheap = HEAPS[mycpu +1];
+	// lock this heap
+	pthread_mutex_lock(&myheap->lock);
+	void *ret = search_free(sizeclass, myheap);
+	if (ret != NULL) {
+		pthread_mutex_unlock(&myheap->lock);
+		return ret;
+	}
+	// unsuccessful in myheap, so check global heap
+	heap *global = HEAPS[0];
+	pthread_mutex_lock(global->lock);
+	ret = search_free(sizeclass, global);
+	pthread_mutex_unlock(&global->lock);
+	if (ret != NULL) {
+		pthread_mutex_unlock(&myheap->lock);
+		return ret;
+	}
+	// unsucessful in global heap too, so get new superblock
+	int numblks = 1;
+	if (SIZE_CLASSES[sizeclass] > SB_AVAILABLE){
+		numblks += (SIZE_CLASSES[sizeclass] - SB_AVAILBLE + SUPERBLOCK_SIZE - 1) / SUPERBLOCK_SIZE;
+	}
+	pthread_mutex_lock(&mem_sbrk_lock);
+	superblock *newblk = mem_sbrk(SUPERBLOCK_SIZE * numblks);
+	pthread_mutex_unlock(&mem_sbrk_lock);
+	init_superblock(mycpu, sizeclass, numblks, (char *) newblk);
+	superblock *oldhead = myheap->buckets[FULLNESS_DENOM][sizeclass];
+	newblk->next = oldhead;
+	myheap->buckets[FULLNESS_DENOM][sizeclass] = newblk;
+	malloc_help(sizeclass, newblk);
+	
+	
+	
+	
 }
 
 void mm_free (void *ptr) {

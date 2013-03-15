@@ -522,7 +522,25 @@ DEBUG("mm_malloc: mem_sbrking\n");
 }
 
 void mm_free (void *ptr) {
-	// TODO
+
+  //find superblock that this pointer is in
+  superblock *thisblk = (superblock *)((char *)(ptr - (ptr - SUPERBLOCK_START)/SUPERBLOCK_SIZE * SUPERBLOCK_SIZE));
+  
+  //lock superblock
+  pthread_mutex_lock(&thisblk->lock);
+  //find heap
+  heap* thisheap = HEAPS[thisblk->owner];
+  //lock the heap
+  pthread_mutex_lock(&thisheap->lock);
+  
+  //find out which bucket this superblock will be in after freed
+  double alloc_ratio = (double)(thisblk->allocated - SIZE_CLASSES[thisblk->sizeclass])
+    /(SB_AVAILABLE + (thisblk->n - 1)*SUPERBLOCK_SIZE);
+  if (alloc_ratio <= 1/(thisblk->bucketnum + 2)){ //empty enough to be in another bucket
+	myheap->buckets[thisblk->bucketnum]
+	
+  } 
+	
 }
 
 // ---------------------------------------------------------------------

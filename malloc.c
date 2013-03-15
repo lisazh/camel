@@ -86,6 +86,9 @@ heap **HEAPS = NULL;
 
 int NUM_PROCESSORS = 0;
 
+// pointer to where superblocks start and the heap structures end
+char *SUPERBLOCK_START = NULL;
+
 // ---------------------------------------------------------------------
 // Helper functions for various memory alignments
 // ---------------------------------------------------------------------
@@ -308,7 +311,7 @@ int init_size_classes() {
 		++NUM_SIZE_CLASSES;
 		size *= SIZE_CLASS_BASE;
 	}
-	
+	/*
 	// debugging
 	long n;
 	for (n = 0; n < NUM_SIZE_CLASSES; ++n) {
@@ -356,14 +359,24 @@ int mm_init (void) {
 		assert(HEAPS[i] != 0);
 	}
 	
-	void test_heap();
-	test_heap();
+	//void test_heap();
+	//test_heap();
 	
 	//void test_superblock();
 	//test_superblock();
 	
 	printf("Page size: %db\n", mem_pagesize());
 	printf("Overhead: %db\n", mem_usage());
+	
+	// pad out the rest so the superblocks will start page aligned
+	size_t padding = mem_usage() % mem_pagesize();
+	if (padding > 0) {
+		padding = mem_pagesize() - padding;
+	}
+	mem_sbrk(padding);
+	SUPERBLOCK_START = mem_usage() + dseg_lo;
+	
+	printf("Superblock start: %db\n", SUPERBLOCK_START - dseg_lo);
 	
 	return 0;
 }

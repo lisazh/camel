@@ -461,7 +461,7 @@ void *mm_malloc (size_t size) {
 		return NULL;
 	}
 	int mycpu = sched_getcpu();
-	assert(mycpu >= 0);
+	assert(mycpu >= 0 && mycpu < NUM_PROCESSORS);
 LOG("cpu %d, size %u, size class %d\n", mycpu, size, sizeclass);
 	// check this heap for free block
 	heap *myheap = HEAPS[mycpu +1];

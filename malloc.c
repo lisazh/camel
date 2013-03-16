@@ -146,11 +146,15 @@ struct superblock_t {
 	// far as I know
 	pthread_mutex_t lock;
 	
-	// for the singly list in the free bucket
+	// next in the doubly linked list in the free bucket
 	struct superblock_t *next;
+	
+	// previous in the doubly linked list
+	struct superblock_t *prev; 
 	
 	// head of the freelist of this superblock
 	freelist *head;
+	 
 	
 	// number of bytes of allocated memory
 	size_t allocated;
@@ -158,8 +162,11 @@ struct superblock_t {
 	// which heap owns this
 	int owner;
 	
-	// which size class this is
+	// which size class this superblock is 
 	int size_class;
+	
+	// which bucket this superblock is in 
+	int bucketnum;
 	
 	// how many are in the array, if this is the first of an array
 	// this will be 1 for a regular single superblock
@@ -544,26 +551,66 @@ DEBUG("mm_malloc: mem_sbrking\n");
 	
 }
 
+/*
+ * Function that indicates that there is a new free space in
+ * superblock blk by updating its freelist. 
+ * Assumes lock to blk has already been obtained.
+ */
+void update_freelist(superblock *blk, void *ptr) {
+	freelist *currfree = blk->head;
+	if (currfree == NULL) {
+		blk->head = (freelist *)ptr;
+		//update the head info? set next and n?
+	}
+	unsigned int ptroff = (char *)(ptr - blk)/blk->size_class; //i do not know how to find this offset
+	if (currfree->next > ptroff){ //next comes after this freeblk
+		currfree->next = ptroff;
+		freelist 
+	
+	}
+	  
+}
+
+
 void mm_free (void *ptr) {
 
-  //find superblock that this pointer is in
-  superblock *thisblk = (superblock *)((char *)(ptr - (ptr - SUPERBLOCK_START)/SUPERBLOCK_SIZE * SUPERBLOCK_SIZE));
+	//find superblock that this pointer is in
+	superblock *thisblk = (superblock *)((char *)(ptr - (ptr - SUPERBLOCK_START)/SUPERBLOCK_SIZE * SUPERBLOCK_SIZE));
+	//how big is the region of this ptr? i.e. if its a ptr to beginning of superblock, does it span array or just
+	//one sublock???
+
+	//lock superblock
+	pthread_mutex_lock(&thisblk->lock);
+	//free this (sub)block and update information
+	update_freelist();
+	thisblk->allocated -= SIZE_CLASSES[thisblk->size_class];
+
+
+	//find heap
+	heap* thisheap = HEAPS[thisblk->owner];
+	//lock the heap
+	pthread_mutex_lock(&thisheap->lock);
   
-  //lock superblock
-  pthread_mutex_lock(&thisblk->lock);
-  //find heap
-  heap* thisheap = HEAPS[thisblk->owner];
-  //lock the heap
-  pthread_mutex_lock(&thisheap->lock);
-  
-  //find out which bucket this superblock will be in after freed
-  double alloc_ratio = (double)(thisblk->allocated - SIZE_CLASSES[thisblk->sizeclass])
-    /(SB_AVAILABLE + (thisblk->n - 1)*SUPERBLOCK_SIZE);
-  if (alloc_ratio <= 1/(thisblk->bucketnum + 2)){ //empty enough to be in another bucket
-	myheap->buckets[thisblk->bucketnum]
+	//find out which bucket this superblock will be in after freed
+	double alloc_ratio = (double)thisblk->allocated/(SB_AVAILABLE + (thisblk->n - 1)*SUPERBLOCK_SIZE);
+	//check if this block should be moved to another fullness bucket
+	if (alloc_ratio <= (FULLNESS_DENOM - thisblk->bucketnum - 1)/FULLNESS_DENOM){
+		if (thisblk->bucketnum < FULLNESS_DENOM-1){ //but only if its not already in the emptiest one
+		//do we need to lock previous block first? i feel like yes, but then we will have lock contention
+		thisblk->prev->next = thisblk->next; //remove from current freelist
+		//if answer to above was yes, then need to lock this block too
+		thisheap->buckets[thisblk->bucketnum + 1][thisblk->sizeclass]->prev = thisblk;
+		thisblk->next = thisheap->[thisblk->bucketnum+1][thisblk->sizeclass];	  
+		}
+	}
+
+	//check if stuff can be moved to global heap
+	if (thisheap->num_superblocks > SB_RESERVE){ //what's the threshold variable???
 	
-  } 
-	
+	}
+
+	pthread_mutex_unlock(&thisheap->lock);
+	pthread_mutex_unlock(&thisblk->lock);
 }
 
 // ---------------------------------------------------------------------

@@ -1,0 +1,90 @@
+========================================================================
+CSC469 A2 Design doc
+========================================================================
+
+------------------------------------------------------------------------
+Top down overview of our current architecture:
+------------------------------------------------------------------------
+
+Basically it's Hoard with slight modifications.
+
+1) "OS" heap
+- need to use mem_sbrk to extend the heap
+- needs pthread mutex (lock)
+
+2) Global free heap
+- like in Hoard, have a global heap which holds partially free superblocks
+- needs pthread mutex (lock)
+- doesn't have fullness buckets, only free buckets
+
+3) Per processor heaps
+- each heap needs a pthread mutex (lock)
+- owns a bunch of superblocks
+- contains fullness buckets
+- each fullness bucket contains free buckets
+- use b=2 for 8,16,...,2^32 size classes/buckets
+
+4) Superblocks
+- a fixed size (e.g. 8KB)
+- needs pthread mutex (lock)
+- contains blocks of a single size class
+- contains stats about amount of allocated blocks and amount of free blocks
+- may be part of an array of superblocks to handle large requests
+- the first superblock in an array of superblocks will store the array size
+
+All memory will be at least 8 byte aligned. All requested sizes will be
+rounded up to the nearest size class.
+
+------------------------------------------------------------------------
+Malloc outline
+------------------------------------------------------------------------
+
+Get request for n bytes
+Round n up to nearest size class sc
+
+Find which heap i to use
+Lock heap i
+Go through fullness buckets from full to empty
+- for each fullness bucket, check free buckets for size class sc
+    - if found, then allocate and update stats
+- if not found, then search in global heap
+    Lock global heap
+    Check free buckets
+    - if found available superblock, lock and transfer to heap i and allocate and unlock
+    Unlock global heap
+    - if didn't find available superblock, sbrk a new superblock and add to heap i
+Unlock heap i
+Return user pointer
+
+------------------------------------------------------------------------
+Free outline
+------------------------------------------------------------------------
+
+Get user pointer
+
+Use address to find out the corresponding superblock
+Lock the superblock
+Find heap i that owns this superblock and lock heap i
+Free the block and add to freelist
+Update stats of superblock
+Update heap i's fullness buckets if necessary
+Check if need to move to global heap
+- if need to move, then lock global heap and move and unlock global heap
+Unlock heap i and superblock
+
+------------------------------------------------------------------------
+Things to consider:
+------------------------------------------------------------------------
+
+How are we addressing:
+
+SCALABILITY:
+- this is something we really haven't thought about
+FALSE SHARING AVOIDANCE:
+- active: blocks are cache-lined
+- passive: ??? (see Hoard notes on pure private heaps)
+FRAGMENTATION:
+- 
+SEQUENTIAL SPEED:
+- finding free block is worst-case O(numbuckets?)
+

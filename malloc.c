@@ -470,17 +470,19 @@ superblock *search_free(int sclass, heap *aheap, int *bucketnum){
 }
 
 /*
- * Removes the first superblock from the given bucket.
+ * Removes superblock blk from the given bucket.
  * Assume heap lock is held.
  */
-void remove_sb_from_bucket(heap *myheap, int bucketnum, int sizeclass) {
-	superblock *blk = myheap->buckets[bucketnum][sizeclass];
+void remove_sb_from_bucket(heap *myheap, int bucketnum, int sizeclass, superblock *blk) {
+	//superblock *blk = myheap->buckets[bucketnum][sizeclass];
 	superblock *oldnext = blk->next;
-	myheap->buckets[bucketnum][sizeclass] = oldnext;
-	if (oldnext != NULL) {
-		// update the old next superblock's prev
-		oldnext->prev = NULL;
-	}
+	superblock *oldprev = blk->prev;
+	if (blk->prev == NULL) { //blk is the head of the bucket
+		myheap->buckets[bucketnum][sizeclass] = oldnext;
+	} 
+	oldnext->prev = oldprev;
+	oldprev->next = oldnext;
+
 	blk->next = NULL;
 	blk->prev = NULL;
 	blk->bucketnum = -1;
@@ -619,13 +621,12 @@ void update_freelist(superblock *blk, void *ptr) {
 	//check what old head was and update stats accordingly
 	if (currfree == NULL) {
 		blk->head->next = 0;
-		blk->head->n = 1;
 	} else {
 		//not sure if this is correct mathematically
-		unsigned int curroff = (unsigned int)(char *)(currfree - blk);
+		unsigned int curroff = (unsigned int)((char *)currfree - blk);
 		blk->head->next = curroff;
-		blk->head->n = 1;
 	}
+	blk->head->n = 1;
 	  
 }
 
@@ -633,7 +634,7 @@ void update_freelist(superblock *blk, void *ptr) {
 void mm_free (void *ptr) {
 
 	//find superblock that this pointer is in
-	superblock *thisblk = (superblock *)((char *)(ptr - (ptr - SUPERBLOCK_START)/SUPERBLOCK_SIZE * SUPERBLOCK_SIZE));
+	superblock *thisblk = (superblock *)((char *)((ptr - SUPERBLOCK_START)/SUPERBLOCK_SIZE * SUPERBLOCK_SIZE)+ SUPERBLOCK_START);
 	//how big is the region of this ptr? i.e. if its a ptr to beginning of superblock, does it span array or just
 	//one sublock???
 
@@ -642,32 +643,38 @@ void mm_free (void *ptr) {
 	//free this (sub)block and update information
 	update_freelist();
 	thisblk->allocated -= SIZE_CLASSES[thisblk->size_class];
+	pthread_mutex_unlock(&thisblk->lock);
 
 	//determine how much of this superblock has been allocated
 	double alloc_ratio = (double)thisblk->allocated/(SB_AVAILABLE + (thisblk->n - 1)*SUPERBLOCK_SIZE);
 	//find its heap and lock it
 	heap* thisheap = HEAPS[thisblk->owner];
 	pthread_mutex_lock(&thisheap->lock);
-
+	int bucketnum = thisblk->bucketnum;
 	//check if this block should be moved to another fullness bucket
-	if (alloc_ratio <= (FULLNESS_DENOM - thisblk->bucketnum - 1)/FULLNESS_DENOM){
-		if (thisblk->bucketnum < FULLNESS_DENOM-1){ //but only if it's not already in the emptiest one
-		thisblk->prev->next = thisblk->next; //remove from current freelist
-		superblock *oldhead = thisheap->buckets[thisblk->bucketnum + 1][thisblk->sizeclass];
-		oldhead->prev = thisblk;
-		thisblk->next = oldhead;
-		thisheap->[thisblk->bucketnum+1][thisblk->sizeclass] = thisblk;     
+	if (alloc_ratio <= (FULLNESS_DENOM - bucketnum - 1)/FULLNESS_DENOM){
+		if (bucketnum < FULLNESS_DENOM-1){ //but only if it's not already in the emptiest one 
+		remove_sb_from_bucket(thisheap, bucketnum, thisblk->size_class, thisblk);
+		insert_sb_into_bucket(thisheap, bucketnum + 1, thisblk->size_class, thisblk);   
 		}
 	}
 
 	//check if stuff can be moved to global heap
-	if (thisheap->num_superblocks > SB_RESERVE &&  thisblk-> allocated <= ALLOC_THRESHOLD){
-		//move stuff to the global heap
-		pthread_mutex_lock(&HEAPS[0]->lock);
+	if (thisheap->num_superblocks > SB_RESERVE && thisblk->allocated <= ALLOC_THRESHOLD){
+		if (thisblk->owner != 0){ //but make sure this blk isn't already in the global heap
+			heap *global = HEAPS[0];
+			pthread_mutex_lock(&global->lock);
+			remove_sb_from_bucket(thisheap,thisblk->bucketnum, thisblk->size_class, thisblk);
+			insert_sb_into_bucket(global, thisblk->bucketnum, thisblk->size_class, thisblk);
+			pthread_mutex_unlock(&global->lock);
+			//change the owner of this block
+			pthread_mutex_lock(&thisblk->lock);
+			thisblk->owner = 0;
+			pthread_mutex_unlock(&thisblk->lock);
+		}
 	}
 
 	pthread_mutex_unlock(&thisheap->lock);
-	pthread_mutex_unlock(&thisblk->lock);
 }
 
 // ---------------------------------------------------------------------

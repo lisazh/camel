@@ -518,7 +518,7 @@ void update_buckets(heap *myheap, int bucketnum, int sizeclass) {
 	if (freeblk->head == NULL) {
 		// if the block freelist is empty, then it means this superblock is full
 		// so just remove it from the buckets
-		remove_sb_from_bucket(myheap, bucketnum, sizeclass);
+		remove_sb_from_bucket(myheap, bucketnum, sizeclass, freeblk);
 		// we now have one less partially free superblock
 		--myheap->num_superblocks;
 	} else {
@@ -528,7 +528,7 @@ void update_buckets(heap *myheap, int bucketnum, int sizeclass) {
 		if (alloc_ratio > (double)(FULLNESS_DENOM - bucketnum)/FULLNESS_DENOM) {
 			// move it one bucket over
 			assert(bucketnum > 0);
-			remove_sb_from_bucket(myheap, bucketnum, sizeclass);
+			remove_sb_from_bucket(myheap, bucketnum, sizeclass, freeblk);
 			insert_sb_into_bucket(myheap, bucketnum-1, sizeclass, freeblk);
 		}
 	}
@@ -569,13 +569,14 @@ DEBUG("mm_malloc: Checking global heap\n");
 	if (freeblk != NULL) {
 		// now we've found one, so transfer it over
 		// remove from global heap's buckets and add to this heap's buckets
-		remove_sb_from_bucket(global, bucketnum, sizeclass);
+		remove_sb_from_bucket(global, bucketnum, sizeclass, freeblk);
 		insert_sb_into_bucket(myheap, bucketnum, sizeclass, freeblk);
-		// change owners
+		// lock this superblock
 		pthread_mutex_lock(&freeblk->lock);
-		freeblk->owner = mycpu+1;
-		// now we're finished with the global heap
+		// since we've locked the superblock we don't need the global heap lock
 		pthread_mutex_unlock(&global->lock);
+		// change owners
+		freeblk->owner = mycpu+1;
 		// now we continue as if we found a suitable superblock in our own heap
 		ret = allocate_block(sizeclass, freeblk);
 		//potentially move the superblock around to another fullness bucket
@@ -626,7 +627,7 @@ void update_freelist(superblock *blk, void *ptr) {
 		blk->head->next = 0;
 	} else {
 		//not sure if this is correct mathematically
-		unsigned int curroff = (unsigned int)((char *)currfree - blk);
+		unsigned int curroff = (unsigned int)((char *)currfree - (char*)blk);
 		blk->head->next = curroff;
 	}
 	blk->head->n = 1;
@@ -637,14 +638,12 @@ void update_freelist(superblock *blk, void *ptr) {
 void mm_free (void *ptr) {
 
 	//find superblock that this pointer is in
-	superblock *thisblk = (superblock *)((char *)((ptr - SUPERBLOCK_START)/SUPERBLOCK_SIZE * SUPERBLOCK_SIZE)+ SUPERBLOCK_START);
-	//how big is the region of this ptr? i.e. if its a ptr to beginning of superblock, does it span array or just
-	//one sublock???
-
+	superblock *thisblk = (superblock *)((((char*)ptr - SUPERBLOCK_START)/SUPERBLOCK_SIZE * SUPERBLOCK_SIZE)+ SUPERBLOCK_START);
+	
 	//lock superblock
 	pthread_mutex_lock(&thisblk->lock);
 	//free this (sub)block and update information
-	update_freelist();
+	update_freelist(thisblk, ptr);
 	thisblk->allocated -= SIZE_CLASSES[thisblk->size_class];
 	pthread_mutex_unlock(&thisblk->lock);
 

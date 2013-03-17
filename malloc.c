@@ -258,7 +258,7 @@ struct heap_t {
 	// stats
 	int num_superblocks;
 };
-typedef struct heap_t heap;
+//typedef struct heap_t heap;
 
 heap *new_heap() {
 	// allocate it from the OS

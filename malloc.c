@@ -30,7 +30,6 @@ name_t myname = {
  * we'll only allocate multiples of the cache line size. Assume dseg_lo
  * starts off cache aligned and page aligned.
  * 
- * Remember to check if request is 0
  * 
  *  will always be superblock size aligned so we can compute
  * the start of the superblock from a user pointer.
@@ -131,28 +130,29 @@ size_t round_to_superblock(size_t s) {
 
 // we want to make sure the freelist is at most 8 bytes so we don't use pointers
 struct freelist_t {
-	// next isn't a pointer to the next freelist node
-	// instead, it's an offset to the next freelist node, from the start of the superblock
-	// because the header is at the start of the superblock, a value of 0 is invalid
-	// so 0 will be used in a similar manner to NULL for pointers
+	/* next isn't a pointer to the next freelist node
+	 * instead, it's an offset to the next freelist node, from the start of the superblock
+	 * because the header is at the start of the superblock, a value of 0 is invalid
+	 * so 0 will be used in a similar manner to NULL for pointers
+	 */
 	unsigned int next;
 	
-	// n is how many contiguous blocks this freelist node spans
-	// it's useful because we can initialize a superblock with a single freelist node
-	// but as blocks are allocated and freed, the freelist will end up with many
-	// small nodes, that are not coalesced, but that's fine
-	// we never need to scan through the freelist
+	/* n is how many contiguous blocks this freelist node spans
+	 * it's useful because we can initialize a superblock with a single freelist node
+	 * but as blocks are allocated and freed, the freelist will end up with many
+	 * small nodes, that are not coalesced, but that's fine
+	 * we never need to scan through the freelist
+	 */
 	unsigned int n;
 };
 typedef struct freelist_t freelist;
 
 struct superblock_t {
 	// Lock for this superblock
-	// remember to initialize using pthread_mutex_init
 	// this lock is used to protect all fields except next,prev,bucketnum
 	pthread_mutex_t lock;
 	
-	// next in the doubly linked list in the free bucket
+	// next in the doubly linked list representing the free bucket
 	struct superblock_t *next;
 	
 	// previous in the doubly linked list
@@ -624,7 +624,7 @@ DEBUG("mm_malloc: mem_sbrking\n");
 		} else {
 			newblk->bucketnum = -1;
 		}
-		assert(ret != NULL);
+		aalssert(ret != NULL);
 	}
 	if (ret == NULL) {
 		// what the heck happened to make this run out of memory?
@@ -646,7 +646,7 @@ void update_freelist(superblock *blk, void *ptr) {
 	if (currfree == NULL) {
 		blk->head->next = 0;
 	} else {
-		//not sure if this is correct mathematically
+		//calculate the offset of the old head of freelists
 		unsigned int curroff = (unsigned int)((char *)currfree - (char*)blk);
 		assert(curroff > 0 && curroff < SUPERBLOCK_SIZE);
 		blk->head->next = curroff;
@@ -672,7 +672,7 @@ DEBUG("mm_free: start\n");
 	pthread_mutex_unlock(&thisblk->lock);
 	
 	// just stop here if this block belongs to the global heap
-	// otherwise a deadlock situation occurs
+	// nothing else needs to be updated
 	if (owner == 0) {
 		return;
 	}
@@ -700,25 +700,24 @@ DEBUG("mm_free: moving buckets\n");
 
 		//check if stuff can be moved to global heap
 		if (thisheap->num_superblocks > SB_RESERVE && thisblk->allocated < ALLOC_THRESHOLD){
-			if (thisblk->owner != 0) { //but make sure this blk isn't already in the global heap
-				assert(thisblk->head != NULL); // shouldn't be full
+				 
 DEBUG("mm_free: moving to global heap\n");
-				//change the owner of this block
-				thisblk->owner = 0;
-				// find out which bucket it's in
-				bucketnum = thisblk->bucketnum;
-				assert(bucketnum >= -1 && bucketnum < FULLNESS_DENOM);
-				// move to global heap
-				heap *global = HEAPS[0];
-				pthread_mutex_lock(&global->lock);
-				if (bucketnum >= 0) {
-					// even though this is free, it may not be in a bucket
-					remove_sb_from_bucket(thisheap, bucketnum, thisblk->size_class, thisblk);
-				}
-				// be conservative and always insert into the last bucket
-				insert_sb_into_bucket(global, FULLNESS_DENOM-1, thisblk->size_class, thisblk);
-				pthread_mutex_unlock(&global->lock);
+			//change the owner of this block
+			thisblk->owner = 0;
+			// find out which bucket it's in
+			bucketnum = thisblk->bucketnum;
+			assert(bucketnum >= -1 && bucketnum < FULLNESS_DENOM);
+			// move to global heap
+			heap *global = HEAPS[0];
+			pthread_mutex_lock(&global->lock);
+			if (bucketnum >= 0) {
+				// even though this is free, it may not be in a bucket
+				remove_sb_from_bucket(thisheap, bucketnum, thisblk->size_class, thisblk);
 			}
+			// if it was empty enough to be moved to the global heap, then it is empty
+			// enough to go into the last bucket
+			insert_sb_into_bucket(global, FULLNESS_DENOM-1, thisblk->size_class, thisblk);
+			pthread_mutex_unlock(&global->lock);			
 		}
 	}
 	

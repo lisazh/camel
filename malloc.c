@@ -577,6 +577,9 @@ DEBUG("mm_malloc: Checking global heap\n");
 		pthread_mutex_unlock(&freeblk->lock);
 		pthread_mutex_unlock(&myheap->lock);
 		return ret;
+	} else {
+		// otherwise we didn't find anything so release the global heap lock and continue
+		pthread_mutex_unlock(&global->lock);
 	}
 DEBUG("mm_malloc: mem_sbrking\n");
 	// unsucessful in global heap too, so get new superblock

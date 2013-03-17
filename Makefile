@@ -3,7 +3,7 @@ RELEASEFLAGS= ${CFLAGS} -DNDEBUG -O3
 DEBUGFLAGS=${CFLAGS} -g
 LIBS=malloc.c memlib.c mm_thread.c tsc.c -lm -lpthread
 
-.PHONY: clean all release threadtest threadtest-release cache-thrash
+.PHONY: clean all threadtest cache-thrash cache-scratch larson
 
 all:
 	gcc -o main ${DEBUGFLAGS} main.c ${LIBS}
@@ -30,6 +30,11 @@ cache-scratch:
 cache-scratch-release:
 	gcc -o cache-scratch ${RELEASEFLAGS} cache-scratch.c ${LIBS}
 
+larson:
+	gcc -o larson ${DEBUGFLAGS} larson.c ${LIBS}
+
+larson-release:
+	gcc -o larson ${RELEASEFLAGS} larson.c ${LIBS}
 
 clean:
 	rm -f main

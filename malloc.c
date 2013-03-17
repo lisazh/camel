@@ -656,33 +656,40 @@ DEBUG("mm_free: finished deallocating block\n");
 DEBUG("mm_free: original owner %d\n", thisblk->owner);
 	assert(thisblk->owner >= 0 && thisblk->owner <= NUM_PROCESSORS);
 	heap* thisheap = HEAPS[thisblk->owner];
+	pthread_mutex_unlock(&thisblk->lock);
+	
+	// now have to try to get heap lock first to avoid deadlock with mm_malloc
 	pthread_mutex_lock(&thisheap->lock);
-	int bucketnum = thisblk->bucketnum;
-	assert(bucketnum >= -1 && bucketnum < FULLNESS_DENOM);
-	//check if this block should be moved to another fullness bucket
-	if (alloc_ratio <= (FULLNESS_DENOM - bucketnum - 1)/FULLNESS_DENOM){
-		if (bucketnum < FULLNESS_DENOM-1) { //but only if it's not already in the emptiest one
+	pthread_mutex_lock(&thisblk->lock);
+	if (thisheap == HEAPS[thisblk->owner]) { // we can continue, otherwise other threads have intervened
+		int bucketnum = thisblk->bucketnum;
+		assert(bucketnum >= -1 && bucketnum < FULLNESS_DENOM);
+		//check if this block should be moved to another fullness bucket
+		if (alloc_ratio <= (FULLNESS_DENOM - bucketnum - 1)/FULLNESS_DENOM){
+			if (bucketnum < FULLNESS_DENOM-1) { //but only if it's not already in the emptiest one
 DEBUG("mm_free: moving buckets\n");
-			if (bucketnum >= 0) { // only remove if already in some bucket i.e. was not full
-				remove_sb_from_bucket(thisheap, bucketnum, thisblk->size_class, thisblk);
+				if (bucketnum >= 0) { // only remove if already in some bucket i.e. was not full
+					remove_sb_from_bucket(thisheap, bucketnum, thisblk->size_class, thisblk);
+				}
+				insert_sb_into_bucket(thisheap, bucketnum + 1, thisblk->size_class, thisblk);   
 			}
-			insert_sb_into_bucket(thisheap, bucketnum + 1, thisblk->size_class, thisblk);   
 		}
-	}
 
-	//check if stuff can be moved to global heap
-	if (thisheap->num_superblocks > SB_RESERVE && thisblk->allocated <= ALLOC_THRESHOLD){
-		if (thisblk->owner != 0){ //but make sure this blk isn't already in the global heap
+		//check if stuff can be moved to global heap
+		if (thisheap->num_superblocks > SB_RESERVE && thisblk->allocated <= ALLOC_THRESHOLD){
+			if (thisblk->owner != 0){ //but make sure this blk isn't already in the global heap
 DEBUG("mm_free: moving to global heap\n");
-			heap *global = HEAPS[0];
-			pthread_mutex_lock(&global->lock);
-			remove_sb_from_bucket(thisheap,thisblk->bucketnum, thisblk->size_class, thisblk);
-			insert_sb_into_bucket(global, thisblk->bucketnum, thisblk->size_class, thisblk);
-			pthread_mutex_unlock(&global->lock);
-			//change the owner of this block
-			thisblk->owner = 0;
+				heap *global = HEAPS[0];
+				pthread_mutex_lock(&global->lock);
+				remove_sb_from_bucket(thisheap,thisblk->bucketnum, thisblk->size_class, thisblk);
+				insert_sb_into_bucket(global, thisblk->bucketnum, thisblk->size_class, thisblk);
+				pthread_mutex_unlock(&global->lock);
+				//change the owner of this block
+				thisblk->owner = 0;
+			}
 		}
 	}
+	
 	pthread_mutex_unlock(&thisblk->lock);
 	pthread_mutex_unlock(&thisheap->lock);
 DEBUG("mm_free: exit\n");

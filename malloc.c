@@ -565,15 +565,16 @@ DEBUG("mm_malloc: mem_sbrking\n");
  */
 void update_freelist(superblock *blk, void *ptr) {
 	freelist *currfree = blk->head;
+	blk->head = (freelist *)ptr;
+	//check what old head was and update stats accordingly
 	if (currfree == NULL) {
-		blk->head = (freelist *)ptr;
-		//update the head info? set next and n?
-	}
-	unsigned int ptroff = (char *)(ptr - blk)/blk->size_class; //i do not know how to find this offset
-	if (currfree->next > ptroff){ //next comes after this freeblk
-		currfree->next = ptroff;
-		freelist 
-	
+		blk->head->next = 0;
+		blk->head->n = 1;
+	} else {
+		//not sure if this is correct mathematically
+		unsigned int curroff = (unsigned int)(char *)(currfree - blk);
+		blk->head->next = curroff;
+		blk->head->n = 1;
 	}
 	  
 }
@@ -592,28 +593,27 @@ void mm_free (void *ptr) {
 	update_freelist();
 	thisblk->allocated -= SIZE_CLASSES[thisblk->size_class];
 
-
-	//find heap
+	//determine how much of this superblock has been allocated
+	double alloc_ratio = (double)thisblk->allocated/(SB_AVAILABLE + (thisblk->n - 1)*SUPERBLOCK_SIZE);
+	//find its heap and lock it
 	heap* thisheap = HEAPS[thisblk->owner];
-	//lock the heap
 	pthread_mutex_lock(&thisheap->lock);
 
-	//find out which bucket this superblock will be in after freed
-	double alloc_ratio = (double)thisblk->allocated/(SB_AVAILABLE + (thisblk->n - 1)*SUPERBLOCK_SIZE);
 	//check if this block should be moved to another fullness bucket
 	if (alloc_ratio <= (FULLNESS_DENOM - thisblk->bucketnum - 1)/FULLNESS_DENOM){
-		if (thisblk->bucketnum < FULLNESS_DENOM-1){ //but only if its not already in the emptiest one
-		//do we need to lock previous block first? i feel like yes, but then we will have lock contention
+		if (thisblk->bucketnum < FULLNESS_DENOM-1){ //but only if it's not already in the emptiest one
 		thisblk->prev->next = thisblk->next; //remove from current freelist
-		//if answer to above was yes, then need to lock this block too
-		thisheap->buckets[thisblk->bucketnum + 1][thisblk->sizeclass]->prev = thisblk;
-		thisblk->next = thisheap->[thisblk->bucketnum+1][thisblk->sizeclass];     
+		superblock *oldhead = thisheap->buckets[thisblk->bucketnum + 1][thisblk->sizeclass];
+		oldhead->prev = thisblk;
+		thisblk->next = oldhead;
+		thisheap->[thisblk->bucketnum+1][thisblk->sizeclass] = thisblk;     
 		}
 	}
 
 	//check if stuff can be moved to global heap
-	if (thisheap->num_superblocks > SB_RESERVE){ //what's the threshold variable???
-	
+	if (thisheap->num_superblocks > SB_RESERVE &&  thisblk-> allocated <= ALLOC_THRESHOLD){
+		//move stuff to the global heap
+		pthread_mutex_lock(&HEAPS[0]->lock);
 	}
 
 	pthread_mutex_unlock(&thisheap->lock);

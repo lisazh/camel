@@ -191,7 +191,7 @@ typedef struct superblock_t superblock;
 // given the heap that owns this, what size class this is, and how many in the array
 // given a mem_sbrk region of memory that is assumed to fit
 int init_superblock(int owner, int size_class, int n, char *sb) {
-	assert(owner >= 0);
+	assert(owner >= 0 && owner <= NUM_PROCESSORS);
 	assert(size_class >= 0 && size_class < NUM_SIZE_CLASSES);
 	assert(n > 0);
 	assert(sb != NULL);
@@ -218,7 +218,6 @@ int init_superblock(int owner, int size_class, int n, char *sb) {
 	head->n = ((n-1) * SUPERBLOCK_SIZE + SB_AVAILABLE) / class_size;
 	head->next = 0;
 	header->head = head;
-	
 	return 0;
 }
 
@@ -356,7 +355,7 @@ int init_size_classes() {
 		printf("%ld: %u\n", n, SIZE_CLASSES[n]);
 	}
 	/**/
-	return 0;
+	return request_size;
 }
 
 
@@ -369,7 +368,8 @@ int mm_init (void) {
 	if (mem_init()) {
 		return -1;
 	}
-	if (init_size_classes()) {
+	int size_classes_size = init_size_classes();
+	if (size_classes_size < 0) {
 		return -1;
 	}
 	
@@ -403,16 +403,18 @@ int mm_init (void) {
 	//void test_superblock();
 	//test_superblock();
 	
+	int total_overhead = size_classes_size + heaps_array_size + HEAP_SIZE*(NUM_PROCESSORS+1);
+	
 	printf("Page size: %db\n", mem_pagesize());
-	printf("Overhead: %db\n", mem_usage());
+	printf("Overhead: %db\n", total_overhead);
 	
 	// pad out the rest so the superblocks will start page aligned
-	size_t padding = mem_usage() % mem_pagesize();
+	size_t padding = total_overhead % mem_pagesize();
 	if (padding > 0) {
 		padding = mem_pagesize() - padding;
 	}
 	mem_sbrk(padding);
-	SUPERBLOCK_START = mem_usage() + dseg_lo;
+	SUPERBLOCK_START = total_overhead + padding + dseg_lo;
 	
 	printf("Superblock start: %db\n", SUPERBLOCK_START - dseg_lo);
 	
@@ -433,8 +435,7 @@ void* allocate_block(int sclass, superblock *freeblk) {
 	assert(freespace != NULL);
 	if (freespace->n > 1){
 		--freespace->n;
-		ret = (char *)freespace + (freespace->n*SIZE_CLASSES[sclass]);  
-	
+		ret = (char *)freespace + (freespace->n*SIZE_CLASSES[sclass]);
 	} else { //freespace->n == 1
 		assert(freespace->n == 1);
 		ret = freespace;
@@ -474,15 +475,17 @@ superblock *search_free(int sclass, heap *aheap, int *bucketnum){
  * Assume heap lock is held.
  */
 void remove_sb_from_bucket(heap *myheap, int bucketnum, int sizeclass, superblock *blk) {
-	//superblock *blk = myheap->buckets[bucketnum][sizeclass];
 	superblock *oldnext = blk->next;
 	superblock *oldprev = blk->prev;
-	if (blk->prev == NULL) { //blk is the head of the bucket
+	if (oldprev == NULL) { //blk is the head of the bucket
 		myheap->buckets[bucketnum][sizeclass] = oldnext;
-	} 
-	oldnext->prev = oldprev;
-	oldprev->next = oldnext;
-
+	} else {
+		// otherwise update it to point past blk and to the next one
+		oldprev->next = oldnext;
+	}
+	if (oldnext != NULL) {
+		oldnext->prev = oldprev;
+	}
 	blk->next = NULL;
 	blk->prev = NULL;
 	blk->bucketnum = -1;
@@ -559,6 +562,7 @@ DEBUG("mm_malloc: cpu %d, size %u, size class %d\n", mycpu, size, sizeclass);
 		update_buckets(myheap, bucketnum, sizeclass);
 		pthread_mutex_unlock(&freeblk->lock);
 		pthread_mutex_unlock(&myheap->lock);
+DEBUG("mm_malloc: returned pointer %d\n", (int)((char*)ret-SUPERBLOCK_START));
 		return ret;
 	}
 DEBUG("mm_malloc: Checking global heap\n");
@@ -636,47 +640,50 @@ void update_freelist(superblock *blk, void *ptr) {
 
 
 void mm_free (void *ptr) {
-
+DEBUG("mm_free: start\n");
 	//find superblock that this pointer is in
 	superblock *thisblk = (superblock *)((((char*)ptr - SUPERBLOCK_START)/SUPERBLOCK_SIZE * SUPERBLOCK_SIZE)+ SUPERBLOCK_START);
-	
+DEBUG("mm_free: sb offset %d\n", ((char*)ptr - SUPERBLOCK_START));
 	//lock superblock
 	pthread_mutex_lock(&thisblk->lock);
 	//free this (sub)block and update information
 	update_freelist(thisblk, ptr);
 	thisblk->allocated -= SIZE_CLASSES[thisblk->size_class];
-	pthread_mutex_unlock(&thisblk->lock);
-
+DEBUG("mm_free: finished deallocating block\n");
 	//determine how much of this superblock has been allocated
 	double alloc_ratio = (double)thisblk->allocated/(SB_AVAILABLE + (thisblk->n - 1)*SUPERBLOCK_SIZE);
 	//find its heap and lock it
+DEBUG("mm_free: original owner %d\n", thisblk->owner);
+	assert(thisblk->owner >= 0 && thisblk->owner <= NUM_PROCESSORS);
 	heap* thisheap = HEAPS[thisblk->owner];
 	pthread_mutex_lock(&thisheap->lock);
 	int bucketnum = thisblk->bucketnum;
+	assert(bucketnum >= 0 && bucketnum < FULLNESS_DENOM);
 	//check if this block should be moved to another fullness bucket
 	if (alloc_ratio <= (FULLNESS_DENOM - bucketnum - 1)/FULLNESS_DENOM){
-		if (bucketnum < FULLNESS_DENOM-1){ //but only if it's not already in the emptiest one 
-		remove_sb_from_bucket(thisheap, bucketnum, thisblk->size_class, thisblk);
-		insert_sb_into_bucket(thisheap, bucketnum + 1, thisblk->size_class, thisblk);   
+		if (bucketnum < FULLNESS_DENOM-1) { //but only if it's not already in the emptiest one
+DEBUG("mm_free: moving buckets\n");
+			remove_sb_from_bucket(thisheap, bucketnum, thisblk->size_class, thisblk);
+			insert_sb_into_bucket(thisheap, bucketnum + 1, thisblk->size_class, thisblk);   
 		}
 	}
 
 	//check if stuff can be moved to global heap
 	if (thisheap->num_superblocks > SB_RESERVE && thisblk->allocated <= ALLOC_THRESHOLD){
 		if (thisblk->owner != 0){ //but make sure this blk isn't already in the global heap
+DEBUG("mm_free: moving to global heap\n");
 			heap *global = HEAPS[0];
 			pthread_mutex_lock(&global->lock);
 			remove_sb_from_bucket(thisheap,thisblk->bucketnum, thisblk->size_class, thisblk);
 			insert_sb_into_bucket(global, thisblk->bucketnum, thisblk->size_class, thisblk);
 			pthread_mutex_unlock(&global->lock);
 			//change the owner of this block
-			pthread_mutex_lock(&thisblk->lock);
 			thisblk->owner = 0;
-			pthread_mutex_unlock(&thisblk->lock);
 		}
 	}
-
+	pthread_mutex_unlock(&thisblk->lock);
 	pthread_mutex_unlock(&thisheap->lock);
+DEBUG("mm_free: exit\n");
 }
 
 // ---------------------------------------------------------------------

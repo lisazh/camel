@@ -198,7 +198,7 @@ int init_superblock(int owner, int size_class, int n, char *sb) {
 	// initialize the header
 	superblock *header = (superblock*)sb;
 	header->owner = owner;
-	header->bucketnum = -1;
+	header->bucketnum = -2; // some invalid value that needs to be overridden
 	header->size_class = size_class;
 	header->n = n;
 	header->next = NULL;
@@ -228,10 +228,13 @@ void debug_superblock(char *ptr) {
 	
 	superblock *sb = (superblock*)ptr;
 	printf("Owner:%d\n", sb->owner);
+	printf("Bucketnum:%d\n", sb->bucketnum);
 	printf("Size class:%d, %u\n", sb->size_class, SIZE_CLASSES[sb->size_class]);
 	printf("Array n:%d\n", sb->n);
-	printf("freelist:%d\n", (int)((char*)sb->head - ptr));
+	printf("freelist:%p %d\n", sb->head, (int)((char*)sb->head - ptr));
 	printf("allocated:%u\n", sb->allocated);
+	printf("prev:%p %d\n", sb->prev, (char*)sb->prev-SUPERBLOCK_START);
+	printf("next:%p %d\n", sb->next, (char*)sb->next-SUPERBLOCK_START);
 	// print the freelist
 	freelist *head = sb->head;
 	while (head != NULL && head != (freelist*)ptr) {
@@ -430,6 +433,9 @@ void* allocate_block(int sclass, superblock *freeblk) {
 	
 	void *ret;
 	freelist *freespace = freeblk->head;
+	//if (freespace == NULL) {
+		//debug_superblock((char*)freeblk);
+	//}
 	assert(freespace != NULL);
 	if (freespace->n > 1){
 		--freespace->n;
@@ -439,6 +445,7 @@ void* allocate_block(int sclass, superblock *freeblk) {
 		ret = freespace;
 		if (freespace->next != 0) {
 			freeblk->head = (freelist *)((char *)freeblk + freespace->next);
+			assert(freeblk->head != NULL);
 		} else { //freespace->next == 0
 			freeblk->head = NULL;
 		}
@@ -473,6 +480,7 @@ superblock *search_free(int sclass, heap *aheap, int *bucketnum){
  * Assume heap lock is held.
  */
 void remove_sb_from_bucket(heap *myheap, int bucketnum, int sizeclass, superblock *blk) {
+	assert(bucketnum >= 0 && bucketnum < FULLNESS_DENOM);
 	superblock *oldnext = blk->next;
 	superblock *oldprev = blk->prev;
 	if (oldprev == NULL) { //blk is the head of the bucket
@@ -630,10 +638,11 @@ void update_freelist(superblock *blk, void *ptr) {
 	} else {
 		//not sure if this is correct mathematically
 		unsigned int curroff = (unsigned int)((char *)currfree - (char*)blk);
+		assert(curroff > 0 && curroff < SUPERBLOCK_SIZE);
 		blk->head->next = curroff;
 	}
 	blk->head->n = 1;
-	  
+	assert(blk->head != NULL);
 }
 
 
@@ -664,12 +673,11 @@ DEBUG("mm_free: start\n");
 		//determine how much of this superblock has been allocated
 		double alloc_ratio = (double)thisblk->allocated/(SB_AVAILABLE + (thisblk->n - 1)*SUPERBLOCK_SIZE);
 		//check if this block should be moved to another fullness bucket
-		if (alloc_ratio <= (FULLNESS_DENOM - bucketnum - 1)/FULLNESS_DENOM){
-			if (bucketnum < FULLNESS_DENOM-1) { //but only if it's not already in the emptiest one
+		if (alloc_ratio <= (double)(FULLNESS_DENOM - bucketnum - 1)/FULLNESS_DENOM){
+			if (bucketnum >= 0 && bucketnum < FULLNESS_DENOM-1) { //but only if it's not full nor completely empty
 DEBUG("mm_free: moving buckets\n");
-				if (bucketnum >= 0) { // only remove if already in some bucket i.e. was not full
-					remove_sb_from_bucket(thisheap, bucketnum, thisblk->size_class, thisblk);
-				}
+				remove_sb_from_bucket(thisheap, bucketnum, thisblk->size_class, thisblk);
+				assert(thisblk->head != NULL);
 				insert_sb_into_bucket(thisheap, bucketnum + 1, thisblk->size_class, thisblk);
 			}
 		}
@@ -683,11 +691,16 @@ DEBUG("mm_free: moving to global heap\n");
 				thisblk->owner = 0;
 				// find out which bucket it's in
 				bucketnum = thisblk->bucketnum;
+				assert(bucketnum >= -1 && bucketnum < FULLNESS_DENOM);
 				// move to global heap
 				heap *global = HEAPS[0];
 				pthread_mutex_lock(&global->lock);
-				remove_sb_from_bucket(thisheap, bucketnum, thisblk->size_class, thisblk);
-				insert_sb_into_bucket(global, bucketnum, thisblk->size_class, thisblk);
+				if (bucketnum >= 0) {
+					// even though this is free, it may not be in a bucket
+					remove_sb_from_bucket(thisheap, bucketnum, thisblk->size_class, thisblk);
+				}
+				// be conservative and always insert into the last bucket
+				insert_sb_into_bucket(global, FULLNESS_DENOM-1, thisblk->size_class, thisblk);
 				pthread_mutex_unlock(&global->lock);
 			}
 		}

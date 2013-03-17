@@ -618,6 +618,8 @@ DEBUG("mm_malloc: mem_sbrking\n");
 			// only add to buckets if this isn't full
 			insert_sb_into_bucket(myheap, FULLNESS_DENOM-1, sizeclass, newblk);
 			update_buckets(myheap, FULLNESS_DENOM - 1, sizeclass);
+		} else {
+			newblk->bucketnum = -1;
 		}
 	}
 	pthread_mutex_unlock(&myheap->lock);
@@ -660,6 +662,12 @@ DEBUG("mm_free: start\n");
 	heap *thisheap = HEAPS[owner];
 	assert(owner >= 0 && owner <= NUM_PROCESSORS);
 	pthread_mutex_unlock(&thisblk->lock);
+	
+	// just stop here if this block belongs to the global heap
+	// otherwise a deadlock situation occurs
+	if (owner == 0) {
+		return;
+	}
 	
 	// now have to try to get heap lock first to avoid deadlock with mm_malloc
 	pthread_mutex_lock(&thisheap->lock);

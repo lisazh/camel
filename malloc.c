@@ -140,8 +140,8 @@ struct freelist_t {
 	/* n is how many contiguous blocks this freelist node spans
 	 * it's useful because we can initialize a superblock with a single freelist node
 	 * but as blocks are allocated and freed, the freelist will end up with many
-	 * small nodes, that are not coalesced, but that's fine
-	 * we never need to scan through the freelist
+	 * discrete sub-blocks, that are not coalesced, but that is not a problem since
+	 * we never allocate more than one sub-block at a time.
 	 */
 	unsigned int n;
 };

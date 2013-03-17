@@ -569,11 +569,11 @@ DEBUG("mm_malloc: Checking global heap\n");
 		// remove from global heap's buckets and add to this heap's buckets
 		remove_sb_from_bucket(global, bucketnum, sizeclass);
 		insert_sb_into_bucket(myheap, bucketnum, sizeclass, freeblk);
-		// now we're finished with the global heap
-		pthread_mutex_unlock(&global->lock);
 		// change owners
 		pthread_mutex_lock(&freeblk->lock);
 		freeblk->owner = mycpu+1;
+		// now we're finished with the global heap
+		pthread_mutex_unlock(&global->lock);
 		// now we continue as if we found a suitable superblock in our own heap
 		ret = allocate_block(sizeclass, freeblk);
 		//potentially move the superblock around to another fullness bucket

@@ -49,6 +49,24 @@ name_t myname = {
 
 
 // ---------------------------------------------------------------------
+// Wrappers for locking and unlocking
+// ---------------------------------------------------------------------
+
+// the mem_sbrk lock
+#if 0
+typedef pthread_spinlock_t mem_sbrk_lock_t;
+#define MEM_SBRK_LOCK_INIT(lock) pthread_spin_init(lock, PTHREAD_PROCESS_SHARED)
+#define LOCK_MEM_SBRK(lock) pthread_spin_lock(lock)
+#define UNLOCK_MEM_SBRK(lock) pthread_spin_unlock(lock)
+#else
+typedef pthread_mutex_t mem_sbrk_lock_t;
+#define MEM_SBRK_LOCK_INIT(lock) pthread_mutex_init(lock, NULL)
+#define LOCK_MEM_SBRK(lock) pthread_mutex_lock(lock)
+#define UNLOCK_MEM_SBRK(lock) pthread_mutex_unlock(lock)
+#endif
+
+
+// ---------------------------------------------------------------------
 // Shared global variables that are set during init
 // ---------------------------------------------------------------------
 
@@ -58,7 +76,7 @@ name_t myname = {
 // when checked on redwolf and lab computers
 // If assigned 0 below, then is initialized later in mm_init
 // Lock for mem_sbrk
-pthread_mutex_t mem_sbrk_lock = PTHREAD_MUTEX_INITIALIZER;
+mem_sbrk_lock_t mem_sbrk_lock;
 
 #define CACHELINE_SIZE 64
 #define SUPERBLOCK_SIZE 4096
@@ -367,6 +385,8 @@ int init_size_classes() {
 // ---------------------------------------------------------------------
 
 int mm_init (void) {
+	MEM_SBRK_LOCK_INIT(&mem_sbrk_lock);
+	
 	if (mem_init()) {
 		return -1;
 	}
@@ -609,9 +629,9 @@ DEBUG("mm_malloc: mem_sbrking\n");
 	if (SIZE_CLASSES[sizeclass] > SB_AVAILABLE) {
 		numblks += (SIZE_CLASSES[sizeclass] - SB_AVAILABLE + SUPERBLOCK_SIZE - 1) / SUPERBLOCK_SIZE;
 	}
-	pthread_mutex_lock(&mem_sbrk_lock);
+	LOCK_MEM_SBRK(&mem_sbrk_lock);
 	superblock *newblk = mem_sbrk(SUPERBLOCK_SIZE * numblks);
-	pthread_mutex_unlock(&mem_sbrk_lock);
+	UNLOCK_MEM_SBRK(&mem_sbrk_lock);
 	if (newblk != NULL) {
 		// make sure we're not out of memory, otherwise just return NULL
 		init_superblock(mycpu+1, sizeclass, numblks, (char *) newblk);

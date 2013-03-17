@@ -88,7 +88,7 @@ size_t SB_AVAILABLE = 0;
 
 // if a heap has less or exactly this number of superblocks
 // then it won't give any of them up to the global heap
-#define SB_RESERVE 0
+#define SB_RESERVE 4
 
 // the denominator for fullness buckets e.g. 1/8 full, 2/8 full, etc...
 #define FULLNESS_DENOM 3
@@ -291,7 +291,7 @@ void debug_heap(char *ptr) {
 	printf("Partially free superblocks: %d\n", h->num_superblocks);
 	printf("Bucket start: %u\n", sizeof(heap));
 	int i;
-	//int j;
+	int j;
 	for (i = 0; i < (FULLNESS_DENOM); ++i) {
 		//printf("bucket number: %d, pointer address: %p\n", i, h->buckets[i]);
 		printf("fb:%d: %u\n", i, (size_t)((char*)h->buckets[i]-(char*)h));
@@ -626,10 +626,6 @@ DEBUG("mm_malloc: mem_sbrking\n");
 		}
 		assert(ret != NULL);
 	}
-	if (ret == NULL) {
-		// what the heck happened to make this run out of memory?
-		debug_heap((char*)myheap);
-	}
 	pthread_mutex_unlock(&myheap->lock);
 	return ret;
 }
@@ -694,6 +690,9 @@ DEBUG("mm_free: moving buckets\n");
 				remove_sb_from_bucket(thisheap, bucketnum, thisblk->size_class, thisblk);
 				assert(thisblk->head != NULL);
 				insert_sb_into_bucket(thisheap, bucketnum + 1, thisblk->size_class, thisblk);
+			} else if (bucketnum == -1 && thisblk->head != NULL) {
+				// need to put it into a bucket if it's not completely full anymore
+				insert_sb_into_bucket(thisheap, FULLNESS_DENOM-1, thisblk->size_class, thisblk);
 			}
 		}
 

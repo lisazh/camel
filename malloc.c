@@ -89,7 +89,7 @@ size_t SB_AVAILABLE = 0;
 
 // if a heap has less or exactly this number of superblocks
 // then it won't give any of them up to the global heap
-#define SB_RESERVE 4
+#define SB_RESERVE 0
 
 // the denominator for fullness buckets e.g. 1/8 full, 2/8 full, etc...
 #define FULLNESS_DENOM 3

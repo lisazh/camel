@@ -89,7 +89,7 @@ size_t SB_AVAILABLE = 0;
 
 // if a heap has less or exactly this number of superblocks
 // then it won't give any of them up to the global heap
-#define SB_RESERVE 4
+#define SB_RESERVE 0
 
 // the denominator for fullness buckets e.g. 1/8 full, 2/8 full, etc...
 #define FULLNESS_DENOM 3
@@ -149,8 +149,7 @@ typedef struct freelist_t freelist;
 struct superblock_t {
 	// Lock for this superblock
 	// remember to initialize using pthread_mutex_init
-	// this lock is used to update the allocated and head fields only, as
-	// far as I know
+	// this lock is used to protect all fields except next,prev,bucketnum
 	pthread_mutex_t lock;
 	
 	// next in the doubly linked list in the free bucket
@@ -247,8 +246,7 @@ void debug_superblock(char *ptr) {
 
 struct heap_t {
 	// remember to initialize using pthread_mutex_init
-	// this lock is for modifying the buckets and the superblock lists
-	// i.e. the next pointers of the superblocks
+	// this lock is for everything in here and for prev,next,bucketnum in superblock
 	pthread_mutex_t lock;
 	
 	// array of fullness buckets
@@ -478,6 +476,7 @@ void remove_sb_from_bucket(heap *myheap, int bucketnum, int sizeclass, superbloc
 	superblock *oldnext = blk->next;
 	superblock *oldprev = blk->prev;
 	if (oldprev == NULL) { //blk is the head of the bucket
+		assert(myheap->buckets[bucketnum][sizeclass] == blk);
 		myheap->buckets[bucketnum][sizeclass] = oldnext;
 	} else {
 		// otherwise update it to point past blk and to the next one
@@ -489,6 +488,8 @@ void remove_sb_from_bucket(heap *myheap, int bucketnum, int sizeclass, superbloc
 	blk->next = NULL;
 	blk->prev = NULL;
 	blk->bucketnum = -1;
+	// update superblock count
+	--myheap->num_superblocks;
 }
 
 /*
@@ -505,6 +506,8 @@ void insert_sb_into_bucket(heap *myheap, int bucketnum, int sizeclass, superbloc
 		newnext->prev = freeblk;
 	}
 	freeblk->bucketnum = bucketnum;
+	// update superblock count
+	++myheap->num_superblocks;
 }
 
 /*
@@ -522,8 +525,6 @@ void update_buckets(heap *myheap, int bucketnum, int sizeclass) {
 		// if the block freelist is empty, then it means this superblock is full
 		// so just remove it from the buckets
 		remove_sb_from_bucket(myheap, bucketnum, sizeclass, freeblk);
-		// we now have one less partially free superblock
-		--myheap->num_superblocks;
 	} else {
 		// otherwise the block freelist isn't empty
 		// now we have to check whether it got fuller and needs to be moved to another fullness bucket
@@ -562,7 +563,6 @@ DEBUG("mm_malloc: cpu %d, size %u, size class %d\n", mycpu, size, sizeclass);
 		update_buckets(myheap, bucketnum, sizeclass);
 		pthread_mutex_unlock(&freeblk->lock);
 		pthread_mutex_unlock(&myheap->lock);
-DEBUG("mm_malloc: returned pointer %d\n", (int)((char*)ret-SUPERBLOCK_START));
 		return ret;
 	}
 DEBUG("mm_malloc: Checking global heap\n");
@@ -610,8 +610,6 @@ DEBUG("mm_malloc: mem_sbrking\n");
 			// only add to buckets if this isn't full
 			insert_sb_into_bucket(myheap, FULLNESS_DENOM-1, sizeclass, newblk);
 			update_buckets(myheap, FULLNESS_DENOM - 1, sizeclass);
-			// now there's one more partially free superblock
-			++myheap->num_superblocks;
 		}
 	}
 	pthread_mutex_unlock(&myheap->lock);
@@ -643,27 +641,28 @@ void mm_free (void *ptr) {
 DEBUG("mm_free: start\n");
 	//find superblock that this pointer is in
 	superblock *thisblk = (superblock *)((((char*)ptr - SUPERBLOCK_START)/SUPERBLOCK_SIZE * SUPERBLOCK_SIZE)+ SUPERBLOCK_START);
-DEBUG("mm_free: sb offset %d\n", ((char*)ptr - SUPERBLOCK_START));
 	//lock superblock
 	pthread_mutex_lock(&thisblk->lock);
 	//free this (sub)block and update information
 	update_freelist(thisblk, ptr);
 	thisblk->allocated -= SIZE_CLASSES[thisblk->size_class];
-DEBUG("mm_free: finished deallocating block\n");
-	//determine how much of this superblock has been allocated
-	double alloc_ratio = (double)thisblk->allocated/(SB_AVAILABLE + (thisblk->n - 1)*SUPERBLOCK_SIZE);
-	//find its heap and lock it
-DEBUG("mm_free: original owner %d\n", thisblk->owner);
-	assert(thisblk->owner >= 0 && thisblk->owner <= NUM_PROCESSORS);
-	heap* thisheap = HEAPS[thisblk->owner];
+	//find its owner heap
+	int owner = thisblk->owner;
+	heap *thisheap = HEAPS[owner];
+	assert(owner >= 0 && owner <= NUM_PROCESSORS);
 	pthread_mutex_unlock(&thisblk->lock);
 	
 	// now have to try to get heap lock first to avoid deadlock with mm_malloc
 	pthread_mutex_lock(&thisheap->lock);
 	pthread_mutex_lock(&thisblk->lock);
-	if (thisheap == HEAPS[thisblk->owner]) { // we can continue, otherwise other threads have intervened
+	
+	// we can continue if it's still owned by same heap
+	// otherwise some other thread intervened so we don't need to do anything
+	if (owner == thisblk->owner) {
 		int bucketnum = thisblk->bucketnum;
 		assert(bucketnum >= -1 && bucketnum < FULLNESS_DENOM);
+		//determine how much of this superblock has been allocated
+		double alloc_ratio = (double)thisblk->allocated/(SB_AVAILABLE + (thisblk->n - 1)*SUPERBLOCK_SIZE);
 		//check if this block should be moved to another fullness bucket
 		if (alloc_ratio <= (FULLNESS_DENOM - bucketnum - 1)/FULLNESS_DENOM){
 			if (bucketnum < FULLNESS_DENOM-1) { //but only if it's not already in the emptiest one
@@ -671,21 +670,25 @@ DEBUG("mm_free: moving buckets\n");
 				if (bucketnum >= 0) { // only remove if already in some bucket i.e. was not full
 					remove_sb_from_bucket(thisheap, bucketnum, thisblk->size_class, thisblk);
 				}
-				insert_sb_into_bucket(thisheap, bucketnum + 1, thisblk->size_class, thisblk);   
+				insert_sb_into_bucket(thisheap, bucketnum + 1, thisblk->size_class, thisblk);
 			}
 		}
 
 		//check if stuff can be moved to global heap
-		if (thisheap->num_superblocks > SB_RESERVE && thisblk->allocated <= ALLOC_THRESHOLD){
-			if (thisblk->owner != 0){ //but make sure this blk isn't already in the global heap
+		if (thisheap->num_superblocks > SB_RESERVE && thisblk->allocated < ALLOC_THRESHOLD){
+			if (thisblk->owner != 0) { //but make sure this blk isn't already in the global heap
+				assert(thisblk->head != NULL); // shouldn't be full
 DEBUG("mm_free: moving to global heap\n");
-				heap *global = HEAPS[0];
-				pthread_mutex_lock(&global->lock);
-				remove_sb_from_bucket(thisheap,thisblk->bucketnum, thisblk->size_class, thisblk);
-				insert_sb_into_bucket(global, thisblk->bucketnum, thisblk->size_class, thisblk);
-				pthread_mutex_unlock(&global->lock);
 				//change the owner of this block
 				thisblk->owner = 0;
+				// find out which bucket it's in
+				bucketnum = thisblk->bucketnum;
+				// move to global heap
+				heap *global = HEAPS[0];
+				pthread_mutex_lock(&global->lock);
+				remove_sb_from_bucket(thisheap, bucketnum, thisblk->size_class, thisblk);
+				insert_sb_into_bucket(global, bucketnum, thisblk->size_class, thisblk);
+				pthread_mutex_unlock(&global->lock);
 			}
 		}
 	}

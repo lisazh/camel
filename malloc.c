@@ -549,7 +549,7 @@ DEBUG("mm_malloc: cpu %d, size %u, size class %d\n", mycpu, size, sizeclass);
 	// lock this heap
 	pthread_mutex_lock(&myheap->lock);
 	superblock *freeblk = search_free(sizeclass, myheap, &bucketnum);
-	void *ret;
+	void *ret = NULL;
 	if (freeblk != NULL) {
 		pthread_mutex_lock(&freeblk->lock);
 		ret = allocate_block(sizeclass, freeblk);
@@ -594,15 +594,18 @@ DEBUG("mm_malloc: mem_sbrking\n");
 	pthread_mutex_lock(&mem_sbrk_lock);
 	superblock *newblk = mem_sbrk(SUPERBLOCK_SIZE * numblks);
 	pthread_mutex_unlock(&mem_sbrk_lock);
-	init_superblock(mycpu+1, sizeclass, numblks, (char *) newblk);
-	// don't need to lock superblock since only this heap knows about it
-	ret = allocate_block(sizeclass, newblk);
-	if (newblk->head != NULL) {
-		// only add to buckets if this isn't full
-		insert_sb_into_bucket(myheap, FULLNESS_DENOM-1, sizeclass, newblk);
-		update_buckets(myheap, FULLNESS_DENOM - 1, sizeclass);
-		// now there's one more partially free superblock
-		++myheap->num_superblocks;
+	if (newblk != NULL) {
+		// make sure we're not out of memory, otherwise just return NULL
+		init_superblock(mycpu+1, sizeclass, numblks, (char *) newblk);
+		// don't need to lock superblock since only this heap knows about it
+		ret = allocate_block(sizeclass, newblk);
+		if (newblk->head != NULL) {
+			// only add to buckets if this isn't full
+			insert_sb_into_bucket(myheap, FULLNESS_DENOM-1, sizeclass, newblk);
+			update_buckets(myheap, FULLNESS_DENOM - 1, sizeclass);
+			// now there's one more partially free superblock
+			++myheap->num_superblocks;
+		}
 	}
 	pthread_mutex_unlock(&myheap->lock);
 	return ret;

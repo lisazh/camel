@@ -129,13 +129,20 @@ size_t round_to_superblock(size_t s) {
 // Superblock structure
 // ---------------------------------------------------------------------
 
-// we want to make sure the freelist is at most 8 bytes
-// so instead of pointers, we use the offset from the start of the superblock
-// i think this can be singly linked
-// we also keep track of how many blocks this free chunk spans
+// we want to make sure the freelist is at most 8 bytes so we don't use pointers
 struct freelist_t {
+	// next isn't a pointer to the next freelist node
+	// instead, it's an offset to the next freelist node, from the start of the superblock
+	// because the header is at the start of the superblock, a value of 0 is invalid
+	// so 0 will be used in a similar manner to NULL for pointers
 	unsigned int next;
-	unsigned int n; // ** explain n, and why it important (but useless in long run)
+	
+	// n is how many contiguous blocks this freelist node spans
+	// it's useful because we can initialize a superblock with a single freelist node
+	// but as blocks are allocated and freed, the freelist will end up with many
+	// small nodes, that are not coalesced, but that's fine
+	// we never need to scan through the freelist
+	unsigned int n;
 };
 typedef struct freelist_t freelist;
 
@@ -150,11 +157,10 @@ struct superblock_t {
 	struct superblock_t *next;
 	
 	// previous in the doubly linked list
-	struct superblock_t *prev; 
+	struct superblock_t *prev;
 	
 	// head of the freelist of this superblock
 	freelist *head;
-	 
 	
 	// number of bytes of allocated memory
 	size_t allocated;
@@ -196,7 +202,7 @@ int init_superblock(int owner, int size_class, int n, char *sb) {
 	header->size_class = size_class;
 	header->n = n;
 	header->next = NULL;
-	header->prev = NULL
+	header->prev = NULL;
 	header->allocated = 0;
 	pthread_mutex_init(&header->lock, NULL);
 	
@@ -462,24 +468,51 @@ superblock *search_free(int sclass, heap *aheap, int *bucketnum){
 }
 
 /*
+ * Removes the first superblock from the given bucket.
+ * Assume heap lock is held.
+ */
+void remove_sb_from_bucket(heap *myheap, int bucketnum, int sizeclass) {
+	superblock *blk = myheap->buckets[bucketnum][sizeclass];
+	superblock *oldnext = blk->next;
+	myheap->buckets[bucketnum][sizeclass] = oldnext;
+	if (oldnext != NULL) {
+		// update the old next superblock's prev
+		oldnext->prev = NULL;
+	}
+	blk->next = NULL;
+	blk->prev = NULL;
+}
+
+/*
+ * Inserts the given superblock into the head of this bucket.
+ * Assume heap lock is held.
+ */
+void insert_sb_into_bucket(heap *myheap, int bucketnum, int sizeclass, superblock *freeblk) {
+	superblock *newnext = myheap->buckets[bucketnum][sizeclass];
+	myheap->buckets[bucketnum][sizeclass] = freeblk;
+	freeblk->next = newnext;
+	freeblk->prev = NULL;
+	if (newnext != NULL) {
+		// update the new next superblock's prev
+		newnext->prev = freeblk;
+	}
+}
+
+/*
  * Given that we've just allocated a block from the first superblock
  * in bucket bucketnum from size class sizeclass, we need to potentially
  * move this superblock to another bucket or remove it completely if it
  * is completely full.
  * 
- * Assume the given heap is locked.
+ * Assume the given heap and superblock is locked.
  */
 void update_buckets(heap *myheap, int bucketnum, int sizeclass) {
 	superblock *freeblk = myheap->buckets[bucketnum][sizeclass];
-	superblock *nextblk = freeblk->next;
 	assert(freeblk != NULL);
 	if (freeblk->head == NULL) {
 		// if the block freelist is empty, then it means this superblock is full
 		// so just remove it from the buckets
-		myheap->buckets[bucketnum][sizeclass] = nextblk; //remove this block from bucket
-		if (nextblk != NULL) {
-			
-		}
+		remove_sb_from_bucket(myheap, bucketnum, sizeclass);
 		// we now have one less partially free superblock
 		--myheap->num_superblocks;
 	} else {
@@ -487,11 +520,10 @@ void update_buckets(heap *myheap, int bucketnum, int sizeclass) {
 		// now we have to check whether it got fuller and needs to be moved to another fullness bucket
 		double alloc_ratio = (double)freeblk->allocated / (SB_AVAILABLE + (freeblk->n - 1)*SUPERBLOCK_SIZE);
 		if (alloc_ratio > (double)(FULLNESS_DENOM - bucketnum)/FULLNESS_DENOM) {
-			superblock *oldbuckt = myheap->buckets[bucketnum][sizeclass];
-			assert (freeblk == oldbuckt);
-			myheap->buckets[bucketnum][sizeclass] = oldbuckt->next; //remove this block from bucket
-			freeblk->next = myheap->buckets[bucketnum-1][sizeclass];
-			myheap->buckets[bucketnum - 1][sizeclass] = freeblk;
+			// move it one bucket over
+			assert(bucketnum > 0);
+			remove_sb_from_bucket(myheap, bucketnum, sizeclass);
+			insert_sb_into_bucket(myheap, bucketnum-1, sizeclass, freeblk);
 		}
 	}
 }
@@ -516,7 +548,7 @@ DEBUG("mm_malloc: cpu %d, size %u, size class %d\n", mycpu, size, sizeclass);
 	void *ret;
 	if (freeblk != NULL) {
 		pthread_mutex_lock(&freeblk->lock);
-		ret = allocate_block(sizeclass, freeblk); 
+		ret = allocate_block(sizeclass, freeblk);
 		//potentially move the superblock around to another fullness bucket
 		update_buckets(myheap, bucketnum, sizeclass);
 		pthread_mutex_unlock(&freeblk->lock);
@@ -527,35 +559,46 @@ DEBUG("mm_malloc: Checking global heap\n");
 	// unsuccessful in myheap, so check global heap
 	heap *global = HEAPS[0];
 	pthread_mutex_lock(&global->lock);
-	ret = search_free(sizeclass, global, &bucketnum);
-	pthread_mutex_unlock(&global->lock);
-	if (ret != NULL) {
+	freeblk = search_free(sizeclass, global, &bucketnum);
+	if (freeblk != NULL) {
+		// now we've found one, so transfer it over
+		// remove from global heap's buckets and add to this heap's buckets
+		remove_sb_from_bucket(global, bucketnum, sizeclass);
+		insert_sb_into_bucket(myheap, bucketnum, sizeclass, freeblk);
+		// now we're finished with the global heap
+		pthread_mutex_unlock(&global->lock);
+		// change owners
+		pthread_mutex_lock(&freeblk->lock);
+		freeblk->owner = mycpu+1;
+		// now we continue as if we found a suitable superblock in our own heap
+		ret = allocate_block(sizeclass, freeblk);
+		//potentially move the superblock around to another fullness bucket
+		update_buckets(myheap, bucketnum, sizeclass);
+		pthread_mutex_unlock(&freeblk->lock);
 		pthread_mutex_unlock(&myheap->lock);
 		return ret;
 	}
 DEBUG("mm_malloc: mem_sbrking\n");
 	// unsucessful in global heap too, so get new superblock
 	int numblks = 1;
-	if (SIZE_CLASSES[sizeclass] > SB_AVAILABLE){
+	if (SIZE_CLASSES[sizeclass] > SB_AVAILABLE) {
 		numblks += (SIZE_CLASSES[sizeclass] - SB_AVAILABLE + SUPERBLOCK_SIZE - 1) / SUPERBLOCK_SIZE;
 	}
 	pthread_mutex_lock(&mem_sbrk_lock);
 	superblock *newblk = mem_sbrk(SUPERBLOCK_SIZE * numblks);
 	pthread_mutex_unlock(&mem_sbrk_lock);
 	init_superblock(mycpu+1, sizeclass, numblks, (char *) newblk);
-	
+	// don't need to lock superblock since only this heap knows about it
 	ret = allocate_block(sizeclass, newblk);
 	if (newblk->head != NULL) {
 		// only add to buckets if this isn't full
-		superblock *oldhead = myheap->buckets[FULLNESS_DENOM - 1][sizeclass];
-		newblk->next = oldhead;
-		myheap->buckets[FULLNESS_DENOM - 1][sizeclass] = newblk;
-		myheap->num_superblocks += 1;
+		insert_sb_into_bucket(myheap, FULLNESS_DENOM-1, sizeclass, newblk);
 		update_buckets(myheap, FULLNESS_DENOM - 1, sizeclass);
+		// now there's one more partially free superblock
+		++myheap->num_superblocks;
 	}
 	pthread_mutex_unlock(&myheap->lock);
 	return ret;
-	
 }
 
 /*

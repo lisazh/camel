@@ -3,7 +3,7 @@ RELEASEFLAGS= ${CFLAGS} -DNDEBUG -O3
 DEBUGFLAGS=${CFLAGS} -g
 LIBS=malloc.c memlib.c mm_thread.c tsc.c -lm -lpthread
 
-.PHONY: clean all release threadtest threadtest-release cache-thrash
+.PHONY: clean all release threadtest threadtest-release cache-thrash cache-scratch
 
 all:
 	gcc -o main ${DEBUGFLAGS} main.c ${LIBS}

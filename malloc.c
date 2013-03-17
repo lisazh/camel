@@ -42,7 +42,7 @@ name_t myname = {
  * */
 
 // toggling debug print
-#if 1
+#if 0
 #define DEBUG(...) do {fprintf(stderr, __VA_ARGS__);} while(0)
 #else
 #define DEBUG(...) do {} while(0)
@@ -89,7 +89,7 @@ size_t SB_AVAILABLE = 0;
 
 // if a heap has less or exactly this number of superblocks
 // then it won't give any of them up to the global heap
-#define SB_RESERVE 4
+#define SB_RESERVE 3
 
 // the denominator for fullness buckets e.g. 1/8 full, 2/8 full, etc...
 #define FULLNESS_DENOM 3
@@ -658,12 +658,14 @@ DEBUG("mm_free: original owner %d\n", thisblk->owner);
 	heap* thisheap = HEAPS[thisblk->owner];
 	pthread_mutex_lock(&thisheap->lock);
 	int bucketnum = thisblk->bucketnum;
-	assert(bucketnum >= 0 && bucketnum < FULLNESS_DENOM);
+	assert(bucketnum >= -1 && bucketnum < FULLNESS_DENOM);
 	//check if this block should be moved to another fullness bucket
 	if (alloc_ratio <= (FULLNESS_DENOM - bucketnum - 1)/FULLNESS_DENOM){
 		if (bucketnum < FULLNESS_DENOM-1) { //but only if it's not already in the emptiest one
 DEBUG("mm_free: moving buckets\n");
-			remove_sb_from_bucket(thisheap, bucketnum, thisblk->size_class, thisblk);
+			if (bucketnum >= 0) { // only remove if already in some bucket i.e. was not full
+				remove_sb_from_bucket(thisheap, bucketnum, thisblk->size_class, thisblk);
+			}
 			insert_sb_into_bucket(thisheap, bucketnum + 1, thisblk->size_class, thisblk);   
 		}
 	}

@@ -89,7 +89,7 @@ size_t SB_AVAILABLE = 0;
 
 // if a heap has less or exactly this number of superblocks
 // then it won't give any of them up to the global heap
-#define SB_RESERVE 3
+#define SB_RESERVE 4
 
 // the denominator for fullness buckets e.g. 1/8 full, 2/8 full, etc...
 #define FULLNESS_DENOM 3
@@ -348,7 +348,7 @@ int init_size_classes() {
 		++NUM_SIZE_CLASSES;
 		size *= SIZE_CLASS_BASE;
 	}
-	
+	/*
 	// debugging
 	long n;
 	for (n = 0; n < NUM_SIZE_CLASSES; ++n) {
@@ -397,16 +397,16 @@ int mm_init (void) {
 		assert(HEAPS[i] != 0);
 	}
 	
-	void test_heap();
-	test_heap();
+	//void test_heap();
+	//test_heap();
 	
 	//void test_superblock();
 	//test_superblock();
 	
 	int total_overhead = size_classes_size + heaps_array_size + HEAP_SIZE*(NUM_PROCESSORS+1);
 	
-	printf("Page size: %db\n", mem_pagesize());
-	printf("Overhead: %db\n", total_overhead);
+DEBUG("Page size: %db\n", mem_pagesize());
+DEBUG("Overhead: %db\n", total_overhead);
 	
 	// pad out the rest so the superblocks will start page aligned
 	size_t padding = total_overhead % mem_pagesize();
@@ -416,7 +416,7 @@ int mm_init (void) {
 	mem_sbrk(padding);
 	SUPERBLOCK_START = total_overhead + padding + dseg_lo;
 	
-	printf("Superblock start: %db\n", SUPERBLOCK_START - dseg_lo);
+DEBUG("Superblock start: %db\n", SUPERBLOCK_START - dseg_lo);
 	
 	return 0;
 }

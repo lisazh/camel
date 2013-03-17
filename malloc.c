@@ -199,6 +199,7 @@ int init_superblock(int owner, int size_class, int n, char *sb) {
 	// initialize the header
 	superblock *header = (superblock*)sb;
 	header->owner = owner;
+	header->bucketnum = -1;
 	header->size_class = size_class;
 	header->n = n;
 	header->next = NULL;
@@ -460,6 +461,7 @@ superblock *search_free(int sclass, heap *aheap, int *bucketnum){
 		superblock *freeblk = aheap->buckets[i][sclass];
 		if (freeblk != NULL){
 			*bucketnum = i;
+			assert(freeblk->bucketnum == i);
 			return freeblk;
 		}
 	}
@@ -481,6 +483,7 @@ void remove_sb_from_bucket(heap *myheap, int bucketnum, int sizeclass) {
 	}
 	blk->next = NULL;
 	blk->prev = NULL;
+	blk->bucketnum = -1;
 }
 
 /*
@@ -496,6 +499,7 @@ void insert_sb_into_bucket(heap *myheap, int bucketnum, int sizeclass, superbloc
 		// update the new next superblock's prev
 		newnext->prev = freeblk;
 	}
+	freeblk->bucketnum = bucketnum;
 }
 
 /*

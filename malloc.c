@@ -89,7 +89,7 @@ size_t SB_AVAILABLE = 0;
 
 // if a heap has less or exactly this number of superblocks
 // then it won't give any of them up to the global heap
-#define SB_RESERVE 0
+#define SB_RESERVE 4
 
 // the denominator for fullness buckets e.g. 1/8 full, 2/8 full, etc...
 #define FULLNESS_DENOM 3
@@ -284,19 +284,20 @@ heap *new_heap() {
 }
 
 void debug_heap(char *ptr) {
+	heap *h = (heap*)ptr;
 	printf("-------------------------------------------------------\n");
 	printf("Heap info:\n");
 	printf("Heap size: %u\n", HEAP_SIZE);
+	printf("Partially free superblocks: %d\n", h->num_superblocks);
 	printf("Bucket start: %u\n", sizeof(heap));
-	heap *h = (heap*)ptr;
 	int i;
-	//int j;
+	int j;
 	for (i = 0; i < (FULLNESS_DENOM); ++i) {
 		//printf("bucket number: %d, pointer address: %p\n", i, h->buckets[i]);
 		printf("fb:%d: %u\n", i, (size_t)((char*)h->buckets[i]-(char*)h));
-		//for (j = 0; j < NUM_SIZE_CLASSES; ++j) {
-		//  printf("fb:%d,fb:%d: %u\n", i, j, (size_t)h->buckets[i][j]);
-		//}
+		for (j = 0; j < NUM_SIZE_CLASSES; ++j) {
+		  printf("fb:%d,fb:%d: %u\n", i, j, (size_t)h->buckets[i][j]);
+		}
 	}
 }
 
@@ -571,6 +572,7 @@ DEBUG("mm_malloc: cpu %d, size %u, size class %d\n", mycpu, size, sizeclass);
 		update_buckets(myheap, bucketnum, sizeclass);
 		pthread_mutex_unlock(&freeblk->lock);
 		pthread_mutex_unlock(&myheap->lock);
+		assert(ret != NULL);
 		return ret;
 	}
 DEBUG("mm_malloc: Checking global heap\n");
@@ -595,6 +597,7 @@ DEBUG("mm_malloc: Checking global heap\n");
 		update_buckets(myheap, bucketnum, sizeclass);
 		pthread_mutex_unlock(&freeblk->lock);
 		pthread_mutex_unlock(&myheap->lock);
+		assert(ret != NULL);
 		return ret;
 	} else {
 		// otherwise we didn't find anything so release the global heap lock and continue
@@ -621,8 +624,15 @@ DEBUG("mm_malloc: mem_sbrking\n");
 		} else {
 			newblk->bucketnum = -1;
 		}
+		assert(ret != NULL);
+	}
+	if (ret == NULL) {
+		// what the heck happened to make this run out of memory?
+		debug_heap((char*)myheap);
+		debug_heap((char*)HEAPS[0]);
 	}
 	pthread_mutex_unlock(&myheap->lock);
+	assert(ret != NULL);
 	return ret;
 }
 
@@ -686,6 +696,9 @@ DEBUG("mm_free: start\n");
 DEBUG("mm_free: moving buckets\n");
 				remove_sb_from_bucket(thisheap, bucketnum, thisblk->size_class, thisblk);
 				assert(thisblk->head != NULL);
+				insert_sb_into_bucket(thisheap, bucketnum + 1, thisblk->size_class, thisblk);
+			} else if (bucketnum == -1 && thisblk->head != NULL) {
+				// special case when you need to add a partially free superblock back into the buckets
 				insert_sb_into_bucket(thisheap, bucketnum + 1, thisblk->size_class, thisblk);
 			}
 		}

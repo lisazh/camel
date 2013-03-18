@@ -23,23 +23,6 @@ name_t myname = {
 	"lis.zhou@mail.utoronto.ca"
 };
 
-/*
- * Some notes
- * 
- * We'll maintain that when we mem_sbrk we'll always be cache aligned and
- * we'll only allocate multiples of the cache line size. Assume dseg_lo
- * starts off cache aligned and page aligned.
- * 
- * 
- * will always be superblock size aligned so we can compute
- * the start of the superblock from a user pointer.
- * 
- * Use SB_RESERVE.
- * 
- * How to handle size agnostic completely free superblocks?
- * 
- * */
-
 // toggling debug print
 #if 0
 #define DEBUG(...) do {fprintf(stderr, __VA_ARGS__);} while(0)
@@ -67,14 +50,9 @@ typedef pthread_mutex_t mem_sbrk_lock_t;
 
 
 // ---------------------------------------------------------------------
-// Shared global variables that are set during init
+// Shared global variables, some of which are set during mm_init
 // ---------------------------------------------------------------------
 
-// pthread_mutex_t is 24 bytes
-// size_t is 4 bytes
-// void* is also 4 bytes
-// when checked on redwolf and lab computers
-// If assigned 0 below, then is initialized later in mm_init
 // Lock for mem_sbrk
 mem_sbrk_lock_t mem_sbrk_lock;
 
@@ -82,14 +60,12 @@ mem_sbrk_lock_t mem_sbrk_lock;
 #define SUPERBLOCK_SIZE 4096
 
 // our size classes will be powers of this
-// we may try values of 1.2 and 1.5 as well
 #define SIZE_CLASS_BASE 2
 
 // the smallest size we'll start with (in bytes)
 #define MIN_SIZE_CLASS 8
 
 // an upper bound on the biggest size class
-// use DSEG_MAX which hopefully will work
 #define MAX_SIZE_CLASS (DSEG_MAX)
 
 // an upper bound on the number of size classes we'll have
@@ -266,7 +242,6 @@ void debug_superblock(char *ptr) {
 // ---------------------------------------------------------------------
 
 struct heap_t {
-	// remember to initialize using pthread_mutex_init
 	// this lock is for everything in here and for prev,next,bucketnum in superblock
 	pthread_mutex_t lock;
 	
@@ -324,7 +299,6 @@ void debug_heap(char *ptr) {
 // ---------------------------------------------------------------------
 
 // find which size class s falls into
-// we may have to replace this with binary search if we can't use log
 int find_size_class(size_t s) {
 	if (s <= MIN_SIZE_CLASS) {
 		return 0;
@@ -374,7 +348,7 @@ int init_size_classes() {
 	for (n = 0; n < NUM_SIZE_CLASSES; ++n) {
 		printf("%ld: %u\n", n, SIZE_CLASSES[n]);
 	}
-	/**/
+	*/
 	return request_size;
 }
 
@@ -454,9 +428,6 @@ void* allocate_block(int sclass, superblock *freeblk) {
 	
 	void *ret;
 	freelist *freespace = freeblk->head;
-	//if (freespace == NULL) {
-		//debug_superblock((char*)freeblk);
-	//}
 	assert(freespace != NULL);
 	if (freespace->n > 1){
 		--freespace->n;
@@ -662,7 +633,6 @@ void update_freelist(superblock *blk, void *ptr) {
 	if (currfree == NULL) {
 		blk->head->next = 0;
 	} else {
-		//not sure if this is correct mathematically
 		unsigned int curroff = (unsigned int)((char *)currfree - (char*)blk);
 		assert(curroff > 0 && curroff < SUPERBLOCK_SIZE);
 		blk->head->next = curroff;
@@ -687,7 +657,7 @@ DEBUG("mm_free: start\n");
 	assert(owner >= 0 && owner <= NUM_PROCESSORS);
 	pthread_mutex_unlock(&thisblk->lock);
 	
-	// just stop here if this block belongs to the global heap
+	// just stop here if this block belongs to the global heap to avoid deadlock
 	if (owner == 0) {
 		return;
 	}
